@@ -36,12 +36,41 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Debug APK bauen
-        run: gradle :app:assembleDebug --stacktrace
+      - name: Signaturschlüssel wiederherstellen
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ROUTINEALARM_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/routinealarm-release.jks"
+          test -s "$RUNNER_TEMP/routinealarm-release.jks"
 
-      - name: APK hochladen
+      - name: Signaturschlüssel überprüfen
+        env:
+          STORE_PASSWORD: ${{ secrets.ROUTINEALARM_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ROUTINEALARM_KEY_ALIAS }}
+        run: |
+          keytool -list \
+            -keystore "$RUNNER_TEMP/routinealarm-release.jks" \
+            -storepass "$STORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
+
+      - name: Signierte Release APK bauen
+        env:
+          ROUTINEALARM_KEYSTORE_PATH: ${{ runner.temp }}/routinealarm-release.jks
+          ROUTINEALARM_STORE_PASSWORD: ${{ secrets.ROUTINEALARM_STORE_PASSWORD }}
+          ROUTINEALARM_KEY_ALIAS: ${{ secrets.ROUTINEALARM_KEY_ALIAS }}
+          ROUTINEALARM_KEY_PASSWORD: ${{ secrets.ROUTINEALARM_KEY_PASSWORD }}
+        run: gradle :app:assembleRelease --stacktrace
+
+      - name: SHA256 Prüfsumme erzeugen
+        run: |
+          sha256sum app/build/outputs/apk/release/app-release.apk \
+            > app/build/outputs/apk/release/RoutineAlarm-release.sha256
+
+      - name: Signierte APK hochladen
         uses: actions/upload-artifact@v4
         with:
-          name: RoutineAlarm-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: RoutineAlarm-signed-release
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/release/RoutineAlarm-release.sha256
           if-no-files-found: error

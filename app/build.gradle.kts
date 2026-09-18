@@ -11,8 +11,28 @@ android {
         applicationId = "com.cztr.routinealarm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1-signed"
+    }
+
+    signingConfigs {
+        create("release") {
+            val keystorePath = System.getenv("ROUTINEALARM_KEYSTORE_PATH")
+
+            if (!keystorePath.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("ROUTINEALARM_STORE_PASSWORD")
+                keyAlias = System.getenv("ROUTINEALARM_KEY_ALIAS")
+                keyPassword = System.getenv("ROUTINEALARM_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     compileOptions {
