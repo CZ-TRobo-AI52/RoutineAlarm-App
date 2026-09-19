@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - feature/routinealarm-v0.2
   workflow_dispatch:
 
 jobs:
