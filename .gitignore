@@ -3,3 +3,8 @@
 *.jks
 *.keystore
 *.base64
+
+# Local Gradle build output
+.gradle/
+build/
+app/build/
