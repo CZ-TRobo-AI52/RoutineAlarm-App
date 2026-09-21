@@ -220,7 +220,7 @@ object PersonalSchedule {
         event("workday_bike_home_1530", MON_TO_FRI, 15, 30, "Feierabend und Fahrrad nach Hause", "Feierabend. Jetzt mit dem Fahrrad nach Hause.", EventCategory.WORK, EventMode.ROUTINE),
         event("workday_shower_1555", MON_TO_FRI, 15, 55, "Duschen", "Jetzt duschen. Zehn Minuten.", EventCategory.PERSONAL),
         event("workday_dry_dress_1605", MON_TO_FRI, 16, 5, "Abtrocknen und anziehen", "Dusche beendet. Jetzt abtrocknen und anziehen.", EventCategory.PERSONAL),
-        event("workday_sprouts_1610", MON_TO_FRI, 16, 10, "Mungobohnen spülen", "Jetzt den Mungobohnen-Keimbehälter spülen.", EventCategory.PERSONAL, EventMode.ROUTINE),
+        event("workday_sprouts_1610", EVERY_DAY, 16, 10, "Mungobohnen spülen", "Jetzt den Mungobohnen-Keimbehälter spülen.", EventCategory.PERSONAL, EventMode.ROUTINE),
         event("workday_water_reset_1612", MON_TO_FRI, 16, 12, "Wasser und Reset", "Jetzt Wasser trinken und kurz resetten.", EventCategory.PERSONAL),
         event("workday_reading_1620", MON_TO_FRI, 16, 20, "Lesen", "Jetzt zwanzig Minuten lesen.", EventCategory.PERSONAL),
         event("workday_english_1640", MON_TO_FRI, 16, 40, "Englisch", "Jetzt fünfzehn Minuten Englisch.", EventCategory.PERSONAL),
