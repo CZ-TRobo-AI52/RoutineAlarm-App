@@ -6,51 +6,98 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
 import android.view.WindowManager
-import android.widget.*
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.TextView
 
 class AlarmActivity : Activity() {
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
+        super.onCreate(
+            savedInstanceState
+        )
 
         window.addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
-            WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
-            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
+                WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         )
 
         val title =
-            intent.getStringExtra(AlarmScheduler.EXTRA_TITLE)
+            intent.getStringExtra(
+                AlarmScheduler.EXTRA_TITLE
+            )
                 ?: "RoutineAlarm"
+
+        val spokenText =
+            intent.getStringExtra(
+                AlarmScheduler.EXTRA_SPOKEN_TEXT
+            )
+                ?: title
 
         val layout =
             LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER
-                setPadding(48, 48, 48, 48)
+                orientation =
+                    LinearLayout.VERTICAL
+
+                gravity =
+                    Gravity.CENTER
+
+                setPadding(
+                    48,
+                    48,
+                    48,
+                    48
+                )
             }
 
         val heading =
             TextView(this).apply {
-                text = "ROUTINEALARM"
-                textSize = 30f
-                gravity = Gravity.CENTER
-                setTextColor(Color.BLACK)
+                text =
+                    "ROUTINEALARM"
+
+                textSize =
+                    30f
+
+                gravity =
+                    Gravity.CENTER
+
+                setTextColor(
+                    Color.BLACK
+                )
             }
 
         val task =
             TextView(this).apply {
-                text = title
-                textSize = 24f
-                gravity = Gravity.CENTER
-                setPadding(0, 60, 0, 60)
-                setTextColor(Color.BLACK)
+                text =
+                    title
+
+                textSize =
+                    24f
+
+                gravity =
+                    Gravity.CENTER
+
+                setPadding(
+                    0,
+                    60,
+                    0,
+                    60
+                )
+
+                setTextColor(
+                    Color.BLACK
+                )
             }
 
         val done =
             Button(this).apply {
-                text = "ERLEDIGT"
+                text =
+                    "ERLEDIGT"
+
                 setOnClickListener {
                     stopAlarm()
                     finish()
@@ -59,13 +106,21 @@ class AlarmActivity : Activity() {
 
         val snooze =
             Button(this).apply {
-                text = "5 MINUTEN SPÄTER"
+                text =
+                    "5 MINUTEN SPÄTER"
+
                 setOnClickListener {
                     AlarmScheduler.scheduleSnooze(
-                        this@AlarmActivity,
-                        title,
-                        5
+                        context =
+                            this@AlarmActivity,
+                        title =
+                            title,
+                        spokenText =
+                            spokenText,
+                        minutes =
+                            5
                     )
+
                     stopAlarm()
                     finish()
                 }
@@ -73,28 +128,52 @@ class AlarmActivity : Activity() {
 
         val skip =
             Button(this).apply {
-                text = "ÜBERSPRINGEN"
+                text =
+                    "ÜBERSPRINGEN"
+
                 setOnClickListener {
                     stopAlarm()
                     finish()
                 }
             }
 
-        layout.addView(heading)
-        layout.addView(task)
-        layout.addView(done)
-        layout.addView(snooze)
-        layout.addView(skip)
+        layout.addView(
+            heading
+        )
 
-        setContentView(layout)
+        layout.addView(
+            task
+        )
+
+        layout.addView(
+            done
+        )
+
+        layout.addView(
+            snooze
+        )
+
+        layout.addView(
+            skip
+        )
+
+        setContentView(
+            layout
+        )
     }
 
     private fun stopAlarm() {
         val stopIntent =
-            Intent(this, AlarmService::class.java).apply {
-                action = AlarmService.ACTION_STOP
+            Intent(
+                this,
+                AlarmService::class.java
+            ).apply {
+                action =
+                    AlarmService.ACTION_STOP
             }
 
-        startService(stopIntent)
+        startService(
+            stopIntent
+        )
     }
 }
