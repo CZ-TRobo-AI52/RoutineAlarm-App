@@ -3,21 +3,25 @@ package com.cztr.routinealarm
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.view.Gravity
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.Space
 import android.widget.TextView
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 
 class AlarmActivity : Activity() {
 
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
-        super.onCreate(
-            savedInstanceState
-        )
+        super.onCreate(savedInstanceState)
 
         window.addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
@@ -38,35 +42,147 @@ class AlarmActivity : Activity() {
             )
                 ?: title
 
-        val layout =
+        val now =
+            LocalDateTime.now()
+
+        val root =
             LinearLayout(this).apply {
                 orientation =
                     LinearLayout.VERTICAL
 
                 gravity =
-                    Gravity.CENTER
+                    Gravity.CENTER_HORIZONTAL
 
                 setPadding(
-                    48,
-                    48,
-                    48,
-                    48
+                    dp(24),
+                    dp(44),
+                    dp(24),
+                    dp(30)
+                )
+
+                setBackgroundColor(
+                    Color.rgb(
+                        247,
+                        248,
+                        250
+                    )
                 )
             }
 
-        val heading =
+        val clock =
             TextView(this).apply {
                 text =
-                    "ROUTINEALARM"
+                    now.format(
+                        DateTimeFormatter.ofPattern(
+                            "HH:mm",
+                            Locale.GERMAN
+                        )
+                    )
 
                 textSize =
-                    30f
+                    52f
 
                 gravity =
                     Gravity.CENTER
 
                 setTextColor(
-                    Color.BLACK
+                    Color.rgb(
+                        20,
+                        23,
+                        28
+                    )
+                )
+
+                setTypeface(
+                    typeface,
+                    Typeface.BOLD
+                )
+            }
+
+        val date =
+            TextView(this).apply {
+                text =
+                    now.format(
+                        DateTimeFormatter.ofPattern(
+                            "EEEE, d. MMMM",
+                            Locale.GERMAN
+                        )
+                    )
+                        .replaceFirstChar {
+                            it.titlecase(
+                                Locale.GERMAN
+                            )
+                        }
+
+                textSize =
+                    15f
+
+                gravity =
+                    Gravity.CENTER
+
+                setTextColor(
+                    Color.rgb(
+                        104,
+                        109,
+                        118
+                    )
+                )
+
+                setPadding(
+                    0,
+                    dp(2),
+                    0,
+                    dp(28)
+                )
+            }
+
+        val card =
+            LinearLayout(this).apply {
+                orientation =
+                    LinearLayout.VERTICAL
+
+                gravity =
+                    Gravity.CENTER_HORIZONTAL
+
+                setPadding(
+                    dp(22),
+                    dp(24),
+                    dp(22),
+                    dp(24)
+                )
+
+                background =
+                    roundedBackground(
+                        Color.WHITE,
+                        22
+                    )
+
+                elevation =
+                    dp(2).toFloat()
+            }
+
+        val label =
+            TextView(this).apply {
+                text =
+                    "JETZT"
+
+                textSize =
+                    12f
+
+                letterSpacing =
+                    0.12f
+
+                setTextColor(
+                    Color.rgb(
+                        51,
+                        82,
+                        235
+                    )
+                )
+
+                setTypeface(
+                    typeface,
+                    Typeface.BOLD
                 )
             }
 
@@ -76,28 +192,77 @@ class AlarmActivity : Activity() {
                     title
 
                 textSize =
-                    24f
+                    28f
 
                 gravity =
                     Gravity.CENTER
 
-                setPadding(
-                    0,
-                    60,
-                    0,
-                    60
+                setTextColor(
+                    Color.rgb(
+                        20,
+                        23,
+                        28
+                    )
                 )
 
-                setTextColor(
-                    Color.BLACK
+                setTypeface(
+                    typeface,
+                    Typeface.BOLD
+                )
+
+                setPadding(
+                    0,
+                    dp(12),
+                    0,
+                    0
                 )
             }
 
-        val done =
-            Button(this).apply {
-                text =
-                    "ERLEDIGT"
+        card.addView(label)
+        card.addView(task)
 
+        if (
+            spokenText.isNotBlank() &&
+            spokenText != title
+        ) {
+            val spoken =
+                TextView(this).apply {
+                    text =
+                        spokenText
+
+                    textSize =
+                        16f
+
+                    gravity =
+                        Gravity.CENTER
+
+                    setTextColor(
+                        Color.rgb(
+                            95,
+                            100,
+                            109
+                        )
+                    )
+
+                    setPadding(
+                        0,
+                        dp(12),
+                        0,
+                        0
+                    )
+                }
+
+            card.addView(spoken)
+        }
+
+        val spacer =
+            Space(this)
+
+        val done =
+            actionButton(
+                "Erledigt",
+                primary = true
+            ).apply {
                 setOnClickListener {
                     stopAlarm()
                     finish()
@@ -105,10 +270,10 @@ class AlarmActivity : Activity() {
             }
 
         val snooze =
-            Button(this).apply {
-                text =
-                    "5 MINUTEN SPÄTER"
-
+            actionButton(
+                "5 Minuten später",
+                primary = false
+            ).apply {
                 setOnClickListener {
                     AlarmScheduler.scheduleSnooze(
                         context =
@@ -127,40 +292,142 @@ class AlarmActivity : Activity() {
             }
 
         val skip =
-            Button(this).apply {
-                text =
-                    "ÜBERSPRINGEN"
-
+            actionButton(
+                "Überspringen",
+                primary = false
+            ).apply {
                 setOnClickListener {
                     stopAlarm()
                     finish()
                 }
             }
 
-        layout.addView(
-            heading
+        root.addView(clock)
+        root.addView(date)
+
+        root.addView(
+            card,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
         )
 
-        layout.addView(
-            task
+        root.addView(
+            spacer,
+            LinearLayout.LayoutParams(
+                1,
+                0,
+                1f
+            )
         )
 
-        layout.addView(
-            done
+        root.addView(
+            done,
+            buttonParams(
+                top = 20
+            )
         )
 
-        layout.addView(
-            snooze
+        root.addView(
+            snooze,
+            buttonParams(
+                top = 10
+            )
         )
 
-        layout.addView(
-            skip
+        root.addView(
+            skip,
+            buttonParams(
+                top = 10
+            )
         )
 
-        setContentView(
-            layout
-        )
+        setContentView(root)
     }
+
+    private fun actionButton(
+        label: String,
+        primary: Boolean
+    ): Button =
+        Button(this).apply {
+            text =
+                label
+
+            isAllCaps =
+                false
+
+            textSize =
+                17f
+
+            minHeight =
+                dp(58)
+
+            setTypeface(
+                typeface,
+                Typeface.BOLD
+            )
+
+            setTextColor(
+                if (
+                    primary
+                ) {
+                    Color.WHITE
+                } else {
+                    Color.rgb(
+                        40,
+                        45,
+                        54
+                    )
+                }
+            )
+
+            background =
+                roundedBackground(
+                    if (
+                        primary
+                    ) {
+                        Color.rgb(
+                            51,
+                            82,
+                            235
+                        )
+                    } else {
+                        Color.WHITE
+                    },
+                    16
+                )
+        }
+
+    private fun buttonParams(
+        top: Int
+    ): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            dp(58)
+        ).apply {
+            topMargin =
+                dp(top)
+        }
+
+    private fun roundedBackground(
+        color: Int,
+        radiusDp: Int
+    ): GradientDrawable =
+        GradientDrawable().apply {
+            shape =
+                GradientDrawable.RECTANGLE
+
+            setColor(
+                color
+            )
+
+            cornerRadius =
+                dp(
+                    radiusDp
+                )
+                    .toFloat()
+        }
 
     private fun stopAlarm() {
         val stopIntent =
@@ -176,4 +443,15 @@ class AlarmActivity : Activity() {
             stopIntent
         )
     }
+
+    private fun dp(
+        value: Int
+    ): Int =
+        (
+            value *
+                resources
+                    .displayMetrics
+                    .density
+            )
+            .toInt()
 }
