@@ -5,10 +5,18 @@ on:
     branches:
       - main
       - feature/routinealarm-v0.2
+      - 'codex/**'
+  pull_request:
+    branches:
+      - main
+      - feature/routinealarm-v0.2
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
 
     steps:
@@ -30,7 +38,62 @@ jobs:
         run: |
           sdkmanager "platform-tools"
           sdkmanager "platforms;android-35"
-          sdkmanager "build-tools;35.0.0"
+          sdkmanager "build-tools;34.0.0" "build-tools;35.0.0"
+
+      - name: Gradle 8.9 einrichten
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Unit-Tests, Lint und Debug-APK prüfen
+        run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --continue --stacktrace
+
+      - name: Test- und Lintberichte hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoutineAlarm-validation-reports
+          path: |
+            app/build/test-results/testDebugUnitTest/**/*.xml
+            app/build/reports/tests/testDebugUnitTest/**
+            app/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+
+      - name: Debug-APK hochladen
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoutineAlarm-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+
+  signed-release:
+    needs: verify
+    if: >-
+      ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/routinealarm-v0.2') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository laden
+        uses: actions/checkout@v5
+
+      - name: Java 17 einrichten
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Android SDK einrichten
+        uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+
+      - name: Android SDK 35 installieren
+        run: |
+          sdkmanager "platform-tools"
+          sdkmanager "platforms;android-35"
+          sdkmanager "build-tools;34.0.0" "build-tools;35.0.0"
 
       - name: Gradle 8.9 einrichten
         uses: gradle/actions/setup-gradle@v4
