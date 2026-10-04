@@ -94,6 +94,16 @@ class SqliteOccurrenceRepository(
     }
 
     override fun apply(action: ExecutionAction): ActionResult = transaction { db ->
+        // Structural errors cannot enter the journal: otherwise an external action
+        // could reserve the internal SCHEDULE key of a future occurrence.
+        require(action.id.isNotBlank() && !action.id.startsWith("schedule:")) {
+            "Action IDs must be nonblank and outside the reserved schedule namespace"
+        }
+        try {
+            action.occurredAt.toEpochMilli()
+        } catch (error: ArithmeticException) {
+            throw IllegalArgumentException("Action time must fit UTC epoch milliseconds", error)
+        }
         // Check before reading current state: a replay returns the historical decision even after later actions.
         db.query("execution_journal", null, "action_id = ?", arrayOf(action.id), null, null, null).use { cursor ->
             if (cursor.moveToFirst()) {
