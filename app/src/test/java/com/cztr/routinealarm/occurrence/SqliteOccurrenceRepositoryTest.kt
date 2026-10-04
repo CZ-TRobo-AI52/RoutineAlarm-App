@@ -20,7 +20,6 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZoneOffset
-import java.util.UUID
 import java.util.concurrent.Callable
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -39,7 +38,9 @@ class SqliteOccurrenceRepositoryTest {
 
     @Before fun setup() {
         context = RuntimeEnvironment.getApplication()
-        name = "occurrence-test-${UUID.randomUUID()}.db"
+        // Robolectric already isolates each method's application directory. Keep the
+        // filename short for native SQLite sidecars on Windows (MAX_PATH).
+        name = "occ.db"
     }
 
     @After fun cleanup() { context.deleteDatabase(name) }
@@ -218,6 +219,29 @@ class SqliteOccurrenceRepositoryTest {
             }
             assertNull(repo.get("alias"))
             assertEquals(1, repo.listForDate(date, zone).size)
+        }
+    }
+
+    @Test fun malformedActionIdCannotReserveAnotherOccurrencesScheduleJournalKey() {
+        SqliteOccurrenceRepository(context, clock, name).use { repo ->
+            repo.materialize(listOf(occurrence()))
+            for (id in listOf("", " ", "schedule:future")) {
+                assertThrows(IllegalArgumentException::class.java) { repo.apply(action(id)) }
+            }
+            assertEquals(1, repo.history("occ-1").size)
+            assertEquals(1, repo.materialize(listOf(occurrence("future"))))
+            assertEquals("schedule:future", repo.history("future").single().actionId)
+        }
+    }
+
+    @Test fun unrepresentableActionTimeIsRejectedBeforeWritingJournal() {
+        SqliteOccurrenceRepository(context, clock, name).use { repo ->
+            repo.materialize(listOf(occurrence()))
+            assertThrows(IllegalArgumentException::class.java) {
+                repo.apply(action().copy(occurredAt = Instant.MAX))
+            }
+            assertEquals(1, repo.history("occ-1").size)
+            assertEquals(OccurrenceStatus.SCHEDULED, repo.get("occ-1")!!.status)
         }
     }
 
