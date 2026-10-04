@@ -11,8 +11,8 @@ android {
         applicationId = "com.cztr.routinealarm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.2.0-alpha01"
+        versionCode = 4
+        versionName = "0.2.0-alpha02"
     }
 
     signingConfigs {
@@ -29,6 +29,10 @@ android {
     }
 
     buildTypes {
+        getByName("debug") {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-test"
+        }
         getByName("release") {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")
@@ -43,4 +47,13 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+}
+
+dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }
