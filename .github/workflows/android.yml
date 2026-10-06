@@ -6,6 +6,7 @@ on:
       - main
       - feature/routinealarm-v0.2
       - 'codex/**'
+      - 'feature/m2.2-*'
   pull_request:
     branches:
       - main
