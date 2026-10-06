@@ -1,34 +1,46 @@
 package com.cztr.routinealarm
 
 import java.time.DayOfWeek
+import java.time.ZoneId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScheduleRevisionTest {
 
+    private val berlin =
+        ZoneId.of("Europe/Berlin")
+
+    private val utc =
+        ZoneId.of("UTC")
+
     private fun event(
         id: String = "event-a",
-        days: Set<DayOfWeek> = setOf(DayOfWeek.MONDAY),
+        days: Set<DayOfWeek> =
+            setOf(DayOfWeek.MONDAY),
         hour: Int = 8,
         minute: Int = 30,
         title: String = "Routine A",
         spokenText: String = title,
-        category: EventCategory = EventCategory.PERSONAL,
-        mode: EventMode = EventMode.ROUTINE,
+        category: EventCategory =
+            EventCategory.PERSONAL,
+        mode: EventMode =
+            EventMode.ROUTINE,
         enabled: Boolean = true
-    ) = RoutineEvent(
-        id = id,
-        daysOfWeek = days,
-        hour = hour,
-        minute = minute,
-        title = title,
-        spokenText = spokenText,
-        category = category,
-        mode = mode,
-        enabled = enabled
-    )
+    ) =
+        RoutineEvent(
+            id = id,
+            daysOfWeek = days,
+            hour = hour,
+            minute = minute,
+            title = title,
+            spokenText = spokenText,
+            category = category,
+            mode = mode,
+            enabled = enabled
+        )
 
     @Test
     fun sameLogicalScheduleAlwaysProducesSameRevision() {
@@ -37,10 +49,11 @@ class ScheduleRevisionTest {
                 event(id = "b"),
                 event(
                     id = "a",
-                    days = setOf(
-                        DayOfWeek.WEDNESDAY,
-                        DayOfWeek.MONDAY
-                    ),
+                    days =
+                        setOf(
+                            DayOfWeek.WEDNESDAY,
+                            DayOfWeek.MONDAY
+                        ),
                     hour = 6,
                     minute = 15
                 )
@@ -49,9 +62,63 @@ class ScheduleRevisionTest {
         val reordered =
             first.reversed()
 
+        val expected =
+            ScheduleRevision.of(
+                events = first,
+                zone = berlin
+            )
+
+        val actual =
+            ScheduleRevision.of(
+                events = reordered,
+                zone = berlin
+            )
+
         assertEquals(
-            ScheduleRevision.of(first),
-            ScheduleRevision.of(reordered)
+            expected,
+            actual
+        )
+
+        assertTrue(
+            expected.matches(
+                Regex(
+                    "^sched-v2:[0-9a-f]{64}$"
+                )
+            )
+        )
+    }
+
+    @Test
+    fun daySetOrderDoesNotChangeRevision() {
+        val first =
+            event(
+                days =
+                    linkedSetOf(
+                        DayOfWeek.MONDAY,
+                        DayOfWeek.WEDNESDAY,
+                        DayOfWeek.FRIDAY
+                    )
+            )
+
+        val reordered =
+            first.copy(
+                daysOfWeek =
+                    linkedSetOf(
+                        DayOfWeek.FRIDAY,
+                        DayOfWeek.MONDAY,
+                        DayOfWeek.WEDNESDAY
+                    )
+            )
+
+        assertEquals(
+            ScheduleRevision.of(
+                events = listOf(first),
+                zone = berlin
+            ),
+            ScheduleRevision.of(
+                events = listOf(reordered),
+                zone = berlin
+            )
         )
     }
 
@@ -61,19 +128,29 @@ class ScheduleRevisionTest {
             event(
                 title = "Aufstehen",
                 spokenText = "Bitte aufstehen",
-                category = EventCategory.MORNING
+                category =
+                    EventCategory.MORNING
             )
 
         val renamed =
             original.copy(
-                title = "Aufstehen und Wasser trinken",
-                spokenText = "Jetzt aufstehen und Wasser trinken",
-                category = EventCategory.PERSONAL
+                title =
+                    "Aufstehen und Wasser trinken",
+                spokenText =
+                    "Jetzt aufstehen und Wasser trinken",
+                category =
+                    EventCategory.PERSONAL
             )
 
         assertEquals(
-            ScheduleRevision.of(listOf(original)),
-            ScheduleRevision.of(listOf(renamed))
+            ScheduleRevision.of(
+                events = listOf(original),
+                zone = berlin
+            ),
+            ScheduleRevision.of(
+                events = listOf(renamed),
+                zone = berlin
+            )
         )
     }
 
@@ -85,7 +162,10 @@ class ScheduleRevisionTest {
         val variants =
             listOf(
                 original.copy(
-                    daysOfWeek = setOf(DayOfWeek.TUESDAY)
+                    daysOfWeek =
+                        setOf(
+                            DayOfWeek.TUESDAY
+                        )
                 ),
                 original.copy(
                     hour = 9
@@ -94,7 +174,8 @@ class ScheduleRevisionTest {
                     minute = 31
                 ),
                 original.copy(
-                    mode = EventMode.ANNOUNCEMENT
+                    mode =
+                        EventMode.ANNOUNCEMENT
                 ),
                 original.copy(
                     enabled = false
@@ -103,14 +184,17 @@ class ScheduleRevisionTest {
 
         val baseline =
             ScheduleRevision.of(
-                listOf(original)
+                events = listOf(original),
+                zone = berlin
             )
 
         variants.forEach { changed ->
             assertNotEquals(
                 baseline,
                 ScheduleRevision.of(
-                    listOf(changed)
+                    events =
+                        listOf(changed),
+                    zone = berlin
                 )
             )
         }
@@ -119,7 +203,9 @@ class ScheduleRevisionTest {
     @Test
     fun changingStableEventIdChangesRevision() {
         val original =
-            event(id = "routine-a")
+            event(
+                id = "routine-a"
+            )
 
         val changed =
             original.copy(
@@ -128,10 +214,31 @@ class ScheduleRevisionTest {
 
         assertNotEquals(
             ScheduleRevision.of(
-                listOf(original)
+                events = listOf(original),
+                zone = berlin
             ),
             ScheduleRevision.of(
-                listOf(changed)
+                events = listOf(changed),
+                zone = berlin
+            )
+        )
+    }
+
+    @Test
+    fun changingZoneChangesRevision() {
+        val events =
+            listOf(
+                event()
+            )
+
+        assertNotEquals(
+            ScheduleRevision.of(
+                events = events,
+                zone = berlin
+            ),
+            ScheduleRevision.of(
+                events = events,
+                zone = utc
             )
         )
     }
@@ -139,7 +246,9 @@ class ScheduleRevisionTest {
     @Test
     fun duplicateEventIdsAreRejected() {
         val first =
-            event(id = "duplicate")
+            event(
+                id = "duplicate"
+            )
 
         val second =
             event(
@@ -151,18 +260,27 @@ class ScheduleRevisionTest {
             IllegalArgumentException::class.java
         ) {
             ScheduleRevision.of(
-                listOf(first, second)
+                events =
+                    listOf(
+                        first,
+                        second
+                    ),
+                zone = berlin
             )
         }
     }
 
     @Test
-    fun currentRevisionMatchesScheduledRegistry() {
+    fun currentRevisionMatchesScheduledRegistryForZone() {
         assertEquals(
             ScheduleRevision.of(
-                ScheduleRegistry.scheduledEvents
+                events =
+                    ScheduleRegistry.scheduledEvents,
+                zone = berlin
             ),
-            ScheduleRevision.current()
+            ScheduleRevision.current(
+                zone = berlin
+            )
         )
     }
 }
