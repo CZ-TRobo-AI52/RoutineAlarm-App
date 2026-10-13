@@ -963,16 +963,15 @@ class MainActivity : Activity() {
                         return@setOnClickListener
                     }
 
-                    AlarmScheduler.scheduleTest(
-                        this@MainActivity,
-                        1
-                    )
-
-                    Toast.makeText(
-                        this@MainActivity,
-                        "Testwecker für 1 Minute geplant",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    runCatching { AlarmScheduler.scheduleTest(this@MainActivity, 1) }
+                        .onSuccess {
+                            Toast.makeText(this@MainActivity, "Testwecker für 1 Minute geplant",
+                                Toast.LENGTH_LONG).show()
+                        }.onFailure {
+                            Toast.makeText(this@MainActivity,
+                                "Planung fehlgeschlagen. Berechtigungen und Testverlauf prüfen.",
+                                Toast.LENGTH_LONG).show()
+                        }
                 }
             },
             LinearLayout.LayoutParams(
@@ -982,6 +981,13 @@ class MainActivity : Activity() {
                 topMargin = dp(14)
             }
         )
+
+        card.addView(secondaryButton("TESTVERLAUF ÖFFNEN").apply {
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity,
+                    com.cztr.routinealarm.execution.TestAlarmActivity::class.java))
+            }
+        })
 
         root.addView(
             card,
