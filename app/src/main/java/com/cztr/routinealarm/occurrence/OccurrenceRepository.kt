@@ -83,6 +83,22 @@ class SqliteOccurrenceRepository(
 
     override fun get(id: String): RoutineOccurrence? = get(helper.readableDatabase, id)
 
+    /** Test alarms only; spans midnight/zone changes without altering personal history. */
+    fun openTests(): List<RoutineOccurrence> = helper.readableDatabase.query(
+        "occurrences", arrayOf("snapshot"), "is_test = 1 AND status IN (?, ?, ?)",
+        arrayOf("SCHEDULED", "SNOOZED", "TRIGGERED"), null, null,
+        "current_trigger_at ASC, occurrence_id ASC",
+    ).use { cursor -> buildList {
+        while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
+    } }
+
+    fun recentTests(): List<RoutineOccurrence> = helper.readableDatabase.query(
+        "occurrences", arrayOf("snapshot"), "is_test = 1", null, null, null,
+        "planned_at DESC, occurrence_id DESC", "20",
+    ).use { cursor -> buildList {
+        while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
+    } }
+
     override fun listForDate(date: LocalDate, zone: ZoneId, includeTests: Boolean): List<RoutineOccurrence> {
         val filter = "nominal_date = ? AND zone_id = ?" + if (includeTests) "" else " AND is_test = 0"
         return helper.readableDatabase.query(
