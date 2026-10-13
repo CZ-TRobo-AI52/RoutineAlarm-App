@@ -163,25 +163,7 @@ object AlarmScheduler {
         context: Context,
         minutes: Int = 1
     ) {
-        val triggerTime =
-            System.currentTimeMillis() +
-                TimeUnit.MINUTES.toMillis(
-                    minutes.toLong()
-                )
-
-        scheduleOneShot(
-            context = context,
-            intentData =
-                "routinealarm://test/${System.currentTimeMillis()}",
-            title =
-                "RoutineAlarm Test",
-            spokenText =
-                "RoutineAlarm Test. Der Wecker funktioniert.",
-            mode =
-                EventMode.ROUTINE,
-            triggerTime =
-                triggerTime
-        )
+        com.cztr.routinealarm.execution.TestAlarmRuntime.create(context, minutes)
     }
 
     fun scheduleSnooze(
