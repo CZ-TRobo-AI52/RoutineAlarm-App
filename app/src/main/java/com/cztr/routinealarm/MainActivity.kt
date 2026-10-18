@@ -22,7 +22,9 @@ import android.widget.TextView
 import android.widget.Toast
 import java.time.DayOfWeek
 import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
+import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
@@ -46,6 +48,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+
+        com.cztr.routinealarm.execution.TestAlarmRuntime.restoreFuture(this)
 
         if (
             ScheduleState.isEnabled(this) &&
@@ -80,6 +84,7 @@ class MainActivity : Activity() {
             }
 
         addHeader(root)
+        addTestAlarmCard(root)
         addNextRoutineCard(root)
         addScheduleToggleCard(root)
         addDaySelector(root)
@@ -144,6 +149,50 @@ class MainActivity : Activity() {
 
         root.addView(title)
         root.addView(date)
+    }
+
+    private fun addTestAlarmCard(root: LinearLayout) {
+        val saved = runCatching {
+            com.cztr.routinealarm.execution.TestAlarmRuntime.repository(this).use { it.openTests() }
+        }.getOrNull()
+        val status = TestAlarmStatusPresenter.present(saved, Instant.now(), ZoneId.systemDefault(),
+            AlarmScheduler.canScheduleExact(this))
+        val card = cardContainer()
+        card.addView(sectionLabel("TESTWECKER"))
+        card.addView(primaryText(status.title))
+
+        if (status.openCount == null) {
+            card.addView(secondaryText(
+                "Die gespeicherten Testwecker konnten nicht gelesen werden. Öffne den Verlauf erneut."))
+        } else {
+            card.addView(secondaryText(
+                "Gespeicherter Stand: ${status.openCount} offen · ${status.triggeredCount} ausgelöst · ${status.overdueCount} überfällig"))
+            status.nextText?.let { card.addView(secondaryText(it)) }
+            if ((status.overdueCount ?: 0) > 0) {
+                card.addView(secondaryText(
+                    "Überfällig: Zeitpunkt erreicht, Auslösung noch nicht gespeichert. Im Verlauf prüfen."))
+            }
+            if ((status.triggeredCount ?: 0) > 0) {
+                card.addView(secondaryText(
+                    "Eine gespeicherte Auslösung bestätigt noch keinen hörbaren Alarm."))
+            }
+        }
+        card.addView(secondaryText("Testwecker laufen unabhängig vom Wochenplan."))
+        if (status.needsExactPermission) {
+            card.addView(secondaryText(
+                "Exakte Wecker sind nicht erlaubt. Gespeicherte Testwecker benötigen diese Freigabe."))
+            card.addView(secondaryButton("Exakte Wecker erlauben").apply {
+                setOnClickListener { requestExactAlarmPermission() }
+            })
+        }
+        card.addView(secondaryButton("Testverlauf öffnen").apply {
+            setOnClickListener { openTestHistory() }
+        })
+        root.addView(card, spacedMatchWidth())
+    }
+
+    private fun openTestHistory() {
+        startActivity(Intent(this, com.cztr.routinealarm.execution.TestAlarmActivity::class.java))
     }
 
     private fun addNextRoutineCard(
@@ -972,6 +1021,7 @@ class MainActivity : Activity() {
                                 "Planung fehlgeschlagen. Berechtigungen und Testverlauf prüfen.",
                                 Toast.LENGTH_LONG).show()
                         }
+                    render()
                 }
             },
             LinearLayout.LayoutParams(
@@ -981,13 +1031,6 @@ class MainActivity : Activity() {
                 topMargin = dp(14)
             }
         )
-
-        card.addView(secondaryButton("TESTVERLAUF ÖFFNEN").apply {
-            setOnClickListener {
-                startActivity(Intent(this@MainActivity,
-                    com.cztr.routinealarm.execution.TestAlarmActivity::class.java))
-            }
-        })
 
         root.addView(
             card,

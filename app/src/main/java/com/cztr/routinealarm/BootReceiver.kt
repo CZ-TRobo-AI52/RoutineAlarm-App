@@ -4,6 +4,7 @@ import android.app.AlarmManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.cztr.routinealarm.execution.TestAlarmRuntime
 
 class BootReceiver :
     BroadcastReceiver() {
@@ -27,6 +28,9 @@ class BootReceiver :
                 else ->
                     false
             }
+
+        // Test alarms are explicitly requested and independent of the weekly toggle.
+        if (shouldRestore) TestAlarmRuntime.restoreFuture(context)
 
         if (
             shouldRestore &&
