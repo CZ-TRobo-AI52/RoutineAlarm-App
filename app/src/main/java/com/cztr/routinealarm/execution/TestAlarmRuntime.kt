@@ -10,6 +10,7 @@ import android.util.Log
 import com.cztr.routinealarm.AlarmScheduler
 import com.cztr.routinealarm.occurrence.*
 import java.time.Clock
+import java.time.Instant
 
 /** Android adapter for the M2.2a test path. Uses the existing occurrences.db. */
 object TestAlarmRuntime {
@@ -42,23 +43,51 @@ object TestAlarmRuntime {
         check(AlarmScheduler.canScheduleExact(context)) { "Bitte genaue Alarme erlauben." }
         val occurrence = repository(context).use { coordinator(it).create(minutes) }
         // The projection is durable before calling Android. Scheduling failure is
-        // visible to the caller; recovery can be explicitly retried from test history.
+        // visible to the caller; future waits are also restored on resume/system recovery.
         schedule(context, occurrence)
         return occurrence
     }
 
     fun schedule(context: Context, occurrence: RoutineOccurrence) {
-        check(AlarmScheduler.canScheduleExact(context)) { "Bitte genaue Alarme erlauben." }
-        repository(context).use { repo ->
-            val current = repo.get(occurrence.id)
-            check(current == occurrence && current.isTest &&
-                current.status in setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED)) {
-                "Dieser Testwecker wurde bereits geändert."
+        repository(context).use { scheduleCurrent(context, occurrence, it, futureOnly = false) }
+    }
+
+    /** Replay the waiting projection into AlarmManager, without inventing a user action.
+     * Overdue/TRIGGERED entries require explicit recovery in the test history. A process
+     * failure between DB commit and platform scheduling is repaired on the next entry.
+     */
+    fun restoreFuture(context: Context) {
+        try {
+            if (!AlarmScheduler.canScheduleExact(context)) return
+            repository(context).use { repo ->
+                repo.futureTests(Instant.now()).forEach { occurrence ->
+                    try {
+                        scheduleCurrent(context, occurrence, repo, futureOnly = true)
+                    } catch (error: Exception) {
+                        // One failed platform call must not discard the remaining durable intents.
+                        Log.e("TestAlarm", "Zukünftiger Testwecker konnte nicht wiederhergestellt werden", error)
+                    }
+                }
             }
+        } catch (error: Exception) {
+            Log.e("TestAlarm", "Testwecker-Wiederherstellung fehlgeschlagen; Daten bleiben erhalten", error)
+        }
+    }
+
+    private fun scheduleCurrent(context: Context, occurrence: RoutineOccurrence,
+        repo: OccurrenceRepository, futureOnly: Boolean) {
+        check(AlarmScheduler.canScheduleExact(context)) { "Bitte genaue Alarme erlauben." }
+        val current = repo.get(occurrence.id)
+        check(current == occurrence && current.isTest &&
+            current.status in setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED)) {
+            "Dieser Testwecker wurde bereits geändert."
         }
         val intent = putToken(Intent(context, TestAlarmReceiver::class.java), AlarmDelivery.from(occurrence))
         val pending = PendingIntent.getBroadcast(context, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        // Recheck time after reading the database: automatic recovery must not turn
+        // a just-expired request into an immediate alarm. Manual retry is explicit.
+        if (futureOnly && !occurrence.currentTriggerAt.isAfter(Instant.now())) return
         context.getSystemService(AlarmManager::class.java).setExactAndAllowWhileIdle(
             AlarmManager.RTC_WAKEUP, occurrence.currentTriggerAt.toEpochMilli(), pending)
     }

@@ -26,7 +26,11 @@ class TestAlarmActivity : Activity() {
         setIntent(intent)
         readIntent(intent)
     }
-    override fun onResume() { super.onResume(); render() }
+    override fun onResume() {
+        super.onResume()
+        TestAlarmRuntime.restoreFuture(this)
+        render()
+    }
 
     private fun readIntent(value: Intent) {
         token = TestAlarmRuntime.token(value)
@@ -44,6 +48,12 @@ class TestAlarmActivity : Activity() {
         if (isAlarm) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         render()
+    }
+
+    private fun openHistory() {
+        val historyIntent = Intent(this, javaClass)
+        setIntent(historyIntent)
+        readIntent(historyIntent)
     }
 
     private fun render() {
@@ -68,7 +78,7 @@ class TestAlarmActivity : Activity() {
                         root.button("Überspringen") { act(currentToken, ActionType.SKIP) }
                     } else root.text("Die gespeicherte Entscheidung bleibt erhalten.")
                     root.button("Testverlauf öffnen") {
-                        token = null; tokenWasSupplied = false; setIntent(Intent(this, javaClass)); render()
+                        openHistory()
                     }
                 } else if (tokenWasSupplied) {
                     root.text("Ungültiger Testwecker", 26f)
@@ -76,7 +86,10 @@ class TestAlarmActivity : Activity() {
                 } else {
                     root.text("Testverlauf", 26f)
                     root.text("Die letzten 20 Testwecker. Sie zählen nicht als persönliche Routinen.")
-                    root.text("Nach Neustart oder einer fehlgeschlagenen Planung kannst du offene Tests hier erneut planen oder öffnen. Vergangene Weckzeiten lösen beim erneuten Planen sofort aus.")
+                    root.text("Zukünftige Testwecker werden bei App-Rückkehr und nach einem Neustart automatisch wieder eingeplant, sobald genaue Alarme erlaubt sind. Offene und überfällige Tests kannst du hier selbst erneut planen oder öffnen. Vergangene Weckzeiten lösen nur beim manuellen erneuten Planen sofort aus.")
+                    if (!com.cztr.routinealarm.AlarmScheduler.canScheduleExact(this)) {
+                        root.text("Genaue Alarme sind nicht erlaubt. Bitte die Berechtigung in den Systemeinstellungen aktivieren; gespeicherte Tests bleiben erhalten.")
+                    }
                     val recent = repo.recentTests()
                     if (recent.isEmpty()) root.text("Noch keine Testwecker vorhanden.")
                     recent.forEach { item ->
@@ -122,7 +135,7 @@ class TestAlarmActivity : Activity() {
             runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
             if (scheduleError != null) {
                 toast("Verschiebung gespeichert, Planung fehlgeschlagen. Im Testverlauf erneut planen.")
-                token = null; tokenWasSupplied = false; setIntent(Intent(this, javaClass)); render()
+                openHistory()
             } else {
                 toast("${TestAlarmRuntime.label(result.occurrence.status)} · gespeichert")
                 finish()
