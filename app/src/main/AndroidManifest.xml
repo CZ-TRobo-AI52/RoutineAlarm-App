@@ -24,6 +24,10 @@
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
+            android:name=".backup.BackupActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".execution.TestAlarmActivity"
             android:exported="false" />
 
