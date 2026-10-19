@@ -92,6 +92,16 @@ class SqliteOccurrenceRepository(
         while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
     } }
 
+    /** Durable scheduling intent. Recovery never changes status or creates journal actions. */
+    fun futureTests(after: Instant): List<RoutineOccurrence> = helper.readableDatabase.query(
+        "occurrences", arrayOf("snapshot"),
+        "is_test = 1 AND status IN (?, ?) AND current_trigger_at > ?",
+        arrayOf("SCHEDULED", "SNOOZED", after.toEpochMilli().toString()), null, null,
+        "current_trigger_at ASC, occurrence_id ASC",
+    ).use { cursor -> buildList {
+        while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
+    } }
+
     fun recentTests(): List<RoutineOccurrence> = helper.readableDatabase.query(
         "occurrences", arrayOf("snapshot"), "is_test = 1", null, null, null,
         "planned_at DESC, occurrence_id DESC", "20",
