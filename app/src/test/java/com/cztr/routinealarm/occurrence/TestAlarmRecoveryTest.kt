@@ -66,6 +66,8 @@ class TestAlarmRecoveryTest {
         TestAlarmRuntime.repository(context).use {
             assertEquals(item, it.get(item.id))
             assertEquals(listOf("SCHEDULE"), it.history(item.id).map { entry -> entry.actionType })
+            assertEquals(2, it.schedulingAttempts(item.id).size)
+            assertTrue(it.schedulingAttempts(item.id).all { attempt -> attempt.receipt?.outcome == SchedulingOutcome.CALL_RETURNED })
         }
     }
 
@@ -88,6 +90,7 @@ class TestAlarmRecoveryTest {
         TestAlarmRuntime.restoreFuture(context)
         assertTrue(tokens().isEmpty())
         assertEquals(item, repo.get(item.id))
+        assertTrue(repo.schedulingAttempts(item.id).all { it.receipt?.outcome == SchedulingOutcome.NOT_CALLED })
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         BootReceiver().onReceive(context, Intent(AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED))
         assertEquals(listOf(AlarmDelivery.from(item)), tokens())

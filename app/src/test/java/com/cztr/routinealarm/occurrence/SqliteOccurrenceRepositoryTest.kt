@@ -272,13 +272,13 @@ class SqliteOccurrenceRepositoryTest {
         }
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
             db.rawQuery("SELECT value FROM user_evidence", null).use { c -> assertTrue(c.moveToFirst()); assertEquals("keep", c.getString(0)) }
-            db.version = 2
+            db.version = 3
         }
         assertThrows(IllegalStateException::class.java) {
             SqliteOccurrenceRepository(context, clock, name).use { it.get("occ-1") }
         }
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
-            assertEquals(2, db.version)
+            assertEquals(3, db.version)
             db.rawQuery("SELECT count(*) FROM user_evidence", null).use { c -> c.moveToFirst(); assertEquals(1, c.getInt(0)) }
         }
     }
