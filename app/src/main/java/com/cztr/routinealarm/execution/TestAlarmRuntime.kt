@@ -64,6 +64,7 @@ object TestAlarmRuntime {
     fun restoreFuture(context: Context) {
         try {
             repository(context).use { repo ->
+                reconcileKnown(context, repo)
                 repo.futureTests(Instant.now()).filter { repo.isDeliveryAllowed(it.id) }.forEach { occurrence ->
                     try {
                         scheduleCurrent(context, occurrence, repo, futureOnly = true)
@@ -75,6 +76,38 @@ object TestAlarmRuntime {
             }
         } catch (error: Exception) {
             Log.e("TestAlarm", "Testwecker-Wiederherstellung fehlgeschlagen; Daten bleiben erhalten", error)
+        }
+    }
+
+    /** Best effort cleanup after a committed user action; it never undoes that action. */
+    fun reconcileOccurrence(context: Context, occurrenceId: String) {
+        try {
+            repository(context).use { reconcileKnown(context, it, occurrenceId) }
+        } catch (error: Exception) {
+            Log.e("TestAlarm", "Alte Testalarm-Kennungen konnten nicht abgeglichen werden", error)
+        }
+    }
+
+    private fun reconcileKnown(context: Context, repo: SqliteOccurrenceRepository, occurrenceId: String? = null) {
+        try {
+            TestAlarmReconciliation(repo, cancel = { token ->
+                val intent = putToken(Intent(context, TestAlarmReceiver::class.java), token)
+                val pending = PendingIntent.getBroadcast(context, 0, intent,
+                    PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
+                // A token handle says nothing about whether AlarmManager holds an alarm.
+                if (pending == null) CancellationObservation.TOKEN_NOT_FOUND
+                else if (!TestAlarmReconciliation.isObsolete(repo, token)) CancellationObservation.NO_LONGER_OBSOLETE
+                else {
+                    context.getSystemService(AlarmManager::class.java).cancel(pending)
+                    pending.cancel()
+                    CancellationObservation.CALL_RETURNED
+                }
+            }, onFailure = { error ->
+                Log.e("TestAlarm", "Rücknahme einer alten Testalarm-Kennung nicht bestätigt", error)
+            }).reconcile(occurrenceId)
+        } catch (error: Exception) {
+            // A cleanup/query failure must not suppress unrelated future scheduling.
+            Log.e("TestAlarm", "Abgleich alter Testalarm-Kennungen nicht abgeschlossen", error)
         }
     }
 
