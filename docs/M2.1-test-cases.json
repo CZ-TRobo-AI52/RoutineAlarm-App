@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "scope": "M2.1",
+  "base_sha": "c4470398fec9ee93f5a98483a83f20da48140219",
+  "domain_suite": "com.cztr.routinealarm.occurrence.OccurrenceDomainTest",
+  "persistence_suite": "com.cztr.routinealarm.occurrence.SqliteOccurrenceRepositoryTest",
+  "cases": [
+    {"id":"CLOCK-01","method":"calendarUsesEnabledRulesAndWeekdays","scope":"calendar expansion"},
+    {"id":"CLOCK-02","methods":["daylightSavingGapShiftsForwardButKeepsNominalTime","daylightSavingFoldDefaultsEarlierAndDistinctInstantHasDistinctIdentity"]},
+    {"id":"CLOCK-03","method":"sameScheduleRevisionCannotBeReboundToAnotherZoneAndBatchIsAtomic","scope":"database guard; OS reconciliation deferred"},
+    {"id":"DB-01","method":"completeWeekSurvivesReopenAndRepeatedExpansionWithoutDuplicateHistory"},
+    {"id":"DB-02","method":"sameActionReplaysOriginalSnapshotAfterLaterActionsAndReopen"},
+    {"id":"DB-03","method":"twoConnectionsCompetingForOneRevisionHaveExactlyOneWinner"},
+    {"id":"DB-04","methods":["unknownOlderSchemaAndNewerVersionFailWithoutReset","corruptDatabaseFailsWithoutDeletingOriginalBytes"]},
+    {"id":"ALARM-01","method":"originalTrainingAndDailyAnchorsRemainIntact","scope":"schedule definitions"},
+    {"id":"ALARM-02","method":"weekMaterializationMatchesExistingScheduleExactly","scope":"schedule definitions"},
+    {"id":"ALARM-03","method":"originalTrainingAndDailyAnchorsRemainIntact"},
+    {"id":"ALARM-04","method":"snoozeKeepsOriginalPlanAndIncrementsGenerationForAllFiveButtons","scope":"pure transitions; UI/device deferred"},
+    {"id":"ALARM-05","methods":["staleActionAndOldDeliveryCannotChangeNewGeneration","terminalOutcomesStayClosed"]},
+    {"id":"REC-01","method":"injectedFailureRollsBackProjectionAndJournalTogether","scope":"failure before DB commit; platform crashes deferred"},
+    {"id":"REC-04","method":"fileBackedReopenRetainsSnapshotsJournalAndIdempotentRenamedEvent","scope":"file close/reopen in Robolectric; Android process kill deferred"},
+    {"id":"CORE-01","method":"announcementIsNeverAutomaticallyCompleted","scope":"no Core connection"}
+  ],
+  "deferred": ["ALARM-06 platform routing", "REC-02 external effects", "REC-03 reboot", "CORE-02", "CORE-03", "UI-01", "UI-02", "SEC-01 intent integration", "PERF-01", "PERF-02", "PERF-03"],
+  "results_source": "CI JUnit XML and ANDROID_DELTA; this list is not a PASS claim"
+}

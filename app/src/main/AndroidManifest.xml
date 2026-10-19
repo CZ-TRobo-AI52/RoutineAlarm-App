@@ -18,8 +18,23 @@
 
     <application
         android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <activity
+            android:name=".execution.TestAlarmActivity"
+            android:exported="false" />
+
+        <receiver
+            android:name=".execution.TestAlarmReceiver"
+            android:exported="false" />
+
+        <service
+            android:name=".execution.TestAlarmService"
+            android:exported="false"
+            android:foregroundServiceType="systemExempted" />
 
         <activity
             android:name=".AlarmActivity"
