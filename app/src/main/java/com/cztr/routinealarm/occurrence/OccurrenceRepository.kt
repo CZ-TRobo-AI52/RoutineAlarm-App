@@ -151,6 +151,28 @@ class SqliteOccurrenceRepository(
         while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
     } }
 
+    /** Bounded recovery page. Equal trigger times use the stable occurrence ID as tie-breaker.
+     * Current state is checked again before the external effect. Changes behind this cursor
+     * are handled by their immediate action or a new recovery cycle, never by list offsets.
+     */
+    fun futureTestsPage(after: Instant, afterTriggerMillis: Long? = null, afterId: String? = null,
+        limit: Int = 64): List<RoutineOccurrence> {
+        require(limit in 1..64)
+        require((afterTriggerMillis == null) == (afterId == null))
+        val args = mutableListOf("SCHEDULED", "SNOOZED", after.toEpochMilli().toString())
+        var selection = "is_test = 1 AND status IN (?, ?) AND current_trigger_at > ? " +
+            "AND NOT EXISTS (SELECT 1 FROM restored_occurrences r WHERE r.occurrence_id = occurrences.occurrence_id)"
+        if (afterTriggerMillis != null) {
+            selection += " AND (current_trigger_at > ? OR (current_trigger_at = ? AND occurrence_id > ?))"
+            args.add(afterTriggerMillis.toString()); args.add(afterTriggerMillis.toString()); args.add(afterId!!)
+        }
+        return helper.readableDatabase.query("occurrences", arrayOf("snapshot"), selection,
+            args.toTypedArray(), null, null, "current_trigger_at ASC, occurrence_id ASC", limit.toString()
+        ).use { cursor -> buildList {
+            while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
+        } }
+    }
+
     fun recentTests(offset: Int = 0): List<RoutineOccurrence> {
         require(offset >= 0)
         return helper.readableDatabase.query(
