@@ -58,7 +58,6 @@ object TestAlarmRuntime {
      */
     fun restoreFuture(context: Context) {
         try {
-            if (!AlarmScheduler.canScheduleExact(context)) return
             repository(context).use { repo ->
                 repo.futureTests(Instant.now()).forEach { occurrence ->
                     try {
@@ -75,26 +74,39 @@ object TestAlarmRuntime {
     }
 
     private fun scheduleCurrent(context: Context, occurrence: RoutineOccurrence,
-        repo: OccurrenceRepository, futureOnly: Boolean) {
-        check(AlarmScheduler.canScheduleExact(context)) { "Bitte genaue Alarme erlauben." }
-        val current = repo.get(occurrence.id)
-        check(current == occurrence && current.isTest &&
-            current.status in setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED)) {
-            "Dieser Testwecker wurde bereits geändert."
-        }
-        val intent = putToken(Intent(context, TestAlarmReceiver::class.java), AlarmDelivery.from(occurrence))
-        val pending = PendingIntent.getBroadcast(context, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        // Recheck time after reading the database: automatic recovery must not turn
-        // a just-expired request into an immediate alarm. Manual retry is explicit.
-        if (futureOnly && !occurrence.currentTriggerAt.isAfter(Instant.now())) return
-        context.getSystemService(AlarmManager::class.java).setExactAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP, occurrence.currentTriggerAt.toEpochMilli(), pending)
+        repo: SqliteOccurrenceRepository, futureOnly: Boolean) {
+        TestAlarmScheduling(repo, Clock.systemDefaultZone(),
+            canSchedule = { AlarmScheduler.canScheduleExact(context) },
+            platformSchedule = { current ->
+                val intent = putToken(Intent(context, TestAlarmReceiver::class.java), AlarmDelivery.from(current))
+                val pending = PendingIntent.getBroadcast(context, 0, intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                val manager = context.getSystemService(AlarmManager::class.java)
+                TestAlarmScheduling.requireCurrentBeforeCall(repo, current, Clock.systemDefaultZone(), futureOnly)
+                manager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP, current.currentTriggerAt.toEpochMilli(), pending)
+            }).schedule(occurrence, futureOnly)
     }
 
     fun refresh(context: Context) {
         // Called by a visible Activity, or while the existing foreground service runs.
         context.startService(Intent(context, TestAlarmService::class.java).setAction(TestAlarmService.REFRESH))
+    }
+
+    fun schedulingLabel(attempt: SchedulingAttempt?, current: RoutineOccurrence): String {
+        if (attempt == null) return "Keine Rückmeldung zur Android-Planung gespeichert."
+        val scope = if (attempt.revision == current.revision && attempt.generation == current.generation)
+            "Letzter Planungsversuch: " else "Planungsversuch für einen früheren Zustand: "
+        return scope + when (attempt.receipt?.outcome) {
+            null -> "Rückmeldung fehlt; Wirkung unbekannt."
+            SchedulingOutcome.CALL_RETURNED -> "Android-Aufruf zurückgekehrt. Tatsächliche Ausgabe nicht bestätigt."
+            SchedulingOutcome.CALL_FAILED -> "Android-Aufruf fehlgeschlagen; Wirkung unbekannt."
+            SchedulingOutcome.NOT_CALLED -> when (attempt.receipt?.reason) {
+                SchedulingReason.PERMISSION_DENIED -> "Nicht aufgerufen, genaue Alarme sind nicht erlaubt."
+                SchedulingReason.EXPIRED -> "Nicht aufgerufen, Weckzeit inzwischen erreicht."
+                else -> "Nicht aufgerufen, gespeicherter Testwecker inzwischen geändert."
+            }
+        }
     }
 
     fun label(status: OccurrenceStatus) = when (status) {

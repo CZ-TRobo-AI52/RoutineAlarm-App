@@ -96,6 +96,7 @@ class TestAlarmActivity : Activity() {
                         root.text("${time.format(item.plannedAt)} · ${TestAlarmRuntime.label(item.status)}", 19f)
                         root.text("Snooze: ${item.snoozeCount} · gesamt ${item.totalSnoozeMinutes} Min.\n" +
                             "Aktuelle Weckzeit: ${time.format(item.currentTriggerAt)}")
+                        root.text(TestAlarmRuntime.schedulingLabel(repo.schedulingAttempts(item.id, latestOnly = true).firstOrNull(), item))
                         when (item.status) {
                             OccurrenceStatus.TRIGGERED -> root.button("Offenen Testwecker öffnen") {
                                 runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
