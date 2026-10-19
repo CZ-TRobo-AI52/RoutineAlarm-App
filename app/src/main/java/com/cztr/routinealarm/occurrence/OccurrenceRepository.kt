@@ -132,6 +132,64 @@ class SqliteOccurrenceRepository(
 
     override fun get(id: String): RoutineOccurrence? = get(helper.readableDatabase, id)
 
+    /** Aggregate persisted millisecond times; only the next visible snapshot is decoded. */
+    fun statusSummary(now: Instant): TestAlarmStatusSummary {
+        val nowMillis = now.toEpochMilli().toString()
+        return readSnapshot { db ->
+            val visible = """is_test = 1 AND status IN ('SCHEDULED','SNOOZED','TRIGGERED')
+                AND NOT EXISTS (SELECT 1 FROM restored_occurrences r
+                    WHERE r.occurrence_id = occurrences.occurrence_id)"""
+            val counts = db.rawQuery("""SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN status = 'TRIGGERED' THEN 1 ELSE 0 END), 0),
+                COALESCE(SUM(CASE WHEN status IN ('SCHEDULED','SNOOZED') AND current_trigger_at <= ?
+                    THEN 1 ELSE 0 END), 0)
+                FROM occurrences WHERE $visible""", arrayOf(nowMillis)).use { cursor ->
+                check(cursor.moveToFirst())
+                Triple(cursor.getInt(0), cursor.getInt(1), cursor.getInt(2))
+            }
+            val next = db.query("occurrences", arrayOf("snapshot"),
+                "$visible AND status IN ('SCHEDULED','SNOOZED') AND current_trigger_at > ?",
+                arrayOf(nowMillis), null, null, "current_trigger_at ASC, occurrence_id ASC", "1",
+            ).use { cursor -> if (cursor.moveToFirst()) OccurrenceCodec.decode(cursor.getString(0)) else null }
+            TestAlarmStatusSummary(counts.first, counts.second, counts.third, next)
+        }
+    }
+
+    /** One consistent page, including receipt/quarantine state and the token epoch. */
+    fun historyPage(offset: Int = 0): TestAlarmHistoryPage {
+        require(offset >= 0)
+        return readSnapshot { db ->
+            val epoch = db.rawQuery("SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null)
+                .use { check(it.moveToFirst()); it.getString(0) }
+            val pausedCount = db.rawQuery("SELECT COUNT(*) FROM restored_occurrences", null)
+                .use { check(it.moveToFirst()); it.getInt(0) }
+            // Select the page before joining, bounding the indexed latest-attempt lookups
+            // to 20 occurrences. Keep attempts without receipts visible as unknown outcomes.
+            val items = db.rawQuery("""SELECT o.snapshot,
+                NOT EXISTS (SELECT 1 FROM restored_occurrences q
+                    WHERE q.occurrence_id = o.occurrence_id) AS delivery_allowed,
+                a.*, r.outcome, r.reason, r.recorded_at_exact
+                FROM (SELECT occurrence_id, planned_at, snapshot FROM occurrences WHERE is_test = 1
+                    ORDER BY planned_at DESC, occurrence_id DESC LIMIT 20 OFFSET ?) o
+                LEFT JOIN scheduling_attempts a ON a.sequence =
+                    (SELECT MAX(latest.sequence) FROM scheduling_attempts latest
+                        WHERE latest.occurrence_id = o.occurrence_id)
+                LEFT JOIN scheduling_receipts r ON r.attempt_id = a.attempt_id
+                ORDER BY o.planned_at DESC, o.occurrence_id DESC""",
+                arrayOf(offset.toString())).use { cursor -> buildList {
+                while (cursor.moveToNext()) {
+                    val attempt = cursor.nullableString("attempt_id")?.let { id -> SchedulingAttempt(
+                        id, cursor.string("occurrence_id"), cursor.long("revision"), cursor.long("generation"),
+                        Instant.ofEpochMilli(cursor.long("trigger_at")), Instant.parse(cursor.string("started_at_exact")),
+                        if (cursor.nullableString("outcome") == null) null else receipt(cursor)) }
+                    add(TestAlarmHistoryItem(OccurrenceCodec.decode(cursor.string("snapshot")),
+                        attempt, cursor.long("delivery_allowed") == 1L))
+                }
+            } }
+            TestAlarmHistoryPage(items, epoch, pausedCount)
+        }
+    }
+
     /** Test alarms only; spans midnight/zone changes without altering personal history. */
     fun openTests(): List<RoutineOccurrence> = helper.readableDatabase.query(
         "occurrences", arrayOf("snapshot"), "is_test = 1 AND status IN (?, ?, ?)",
@@ -344,6 +402,19 @@ class SqliteOccurrenceRepository(
         SchedulingReason.valueOf(cursor.string("reason")), Instant.parse(cursor.string("recorded_at_exact")))
 
     override fun close() = helper.close()
+
+    /** Keep related SELECTs on one connection and snapshot; never invoke the mutation hook. */
+    private fun <T> readSnapshot(block: (SQLiteDatabase) -> T): T {
+        val db = helper.readableDatabase
+        db.beginTransactionNonExclusive()
+        try {
+            val result = block(db)
+            db.setTransactionSuccessful()
+            return result
+        } finally {
+            db.endTransaction()
+        }
+    }
 
     private fun <T> transaction(block: (SQLiteDatabase) -> T): T {
         val db = helper.writableDatabase
