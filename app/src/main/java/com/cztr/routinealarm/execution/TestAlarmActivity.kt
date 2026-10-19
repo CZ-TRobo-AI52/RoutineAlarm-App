@@ -172,6 +172,7 @@ class TestAlarmActivity : Activity() {
             // and show an explicit retry path instead of claiming the alarm is armed.
             val scheduleError = if (type == ActionType.SNOOZE)
                 runCatching { TestAlarmRuntime.schedule(this, result.occurrence) }.exceptionOrNull() else null
+            TestAlarmRuntime.reconcileOccurrence(this, result.occurrence.id)
             runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
             if (scheduleError != null) {
                 toast("Verschiebung gespeichert, Planung fehlgeschlagen. Im Testverlauf erneut planen.")

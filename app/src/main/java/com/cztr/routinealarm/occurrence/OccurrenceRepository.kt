@@ -284,6 +284,40 @@ class SqliteOccurrenceRepository(
                 if (cursor.nullableString("outcome") == null) null else receipt(cursor)))
         } }
 
+    fun schedulingWatermark(): Long = helper.readableDatabase.rawQuery(
+        "SELECT COALESCE(MAX(sequence), 0) FROM scheduling_attempts", null,
+    ).use { check(it.moveToFirst()); it.getLong(0) }
+
+    /** Fixed high-watermark, stable identity cursor, bounded Kotlin list. The first
+     * attempt defines the cursor regardless of receipt; any possible effect qualifies.
+     * Existing sequence/occurrence indexes avoid regrouping the entire history per page.
+     * Attempts lack epoch provenance; only current local identities are reconstructed.
+     */
+    fun knownTestDeliveries(through: Long, after: Long, occurrenceId: String? = null): List<KnownTestDelivery> {
+        require(through >= 0 && after >= 0)
+        val epoch = deliveryEpoch()
+        val args = mutableListOf(after.toString(), through.toString())
+        if (occurrenceId != null) args.add(occurrenceId)
+        args.add(through.toString())
+        return helper.readableDatabase.rawQuery("""SELECT a.sequence AS first_sequence,
+            a.occurrence_id, a.generation, a.revision
+            FROM scheduling_attempts a JOIN occurrences o ON a.occurrence_id = o.occurrence_id
+            WHERE o.is_test = 1 AND a.sequence > ? AND a.sequence <= ?
+            ${if (occurrenceId == null) "" else "AND a.occurrence_id = ?"}
+            AND NOT EXISTS (SELECT 1 FROM scheduling_attempts earlier
+                WHERE earlier.occurrence_id = a.occurrence_id AND earlier.generation = a.generation
+                AND earlier.revision = a.revision AND earlier.sequence < a.sequence)
+            AND EXISTS (SELECT 1 FROM scheduling_attempts possible
+                LEFT JOIN scheduling_receipts r ON possible.attempt_id = r.attempt_id
+                WHERE possible.occurrence_id = a.occurrence_id AND possible.generation = a.generation
+                AND possible.revision = a.revision AND possible.sequence <= ?
+                AND (r.outcome IS NULL OR r.outcome != 'NOT_CALLED'))
+            ORDER BY a.sequence ASC LIMIT 64""", args.toTypedArray()).use { cursor -> buildList {
+                while (cursor.moveToNext()) add(KnownTestDelivery(cursor.long("first_sequence"),
+                    AlarmDelivery(cursor.string("occurrence_id"), cursor.long("generation"), cursor.long("revision"), epoch)))
+            } }
+    }
+
     private fun receipt(cursor: Cursor) = SchedulingReceipt(SchedulingOutcome.valueOf(cursor.string("outcome")),
         SchedulingReason.valueOf(cursor.string("reason")), Instant.parse(cursor.string("recorded_at_exact")))
 
@@ -389,9 +423,9 @@ class SqliteOccurrenceRepository(
     }
 }
 
-/** Schema 3 adds local restore permissions; historical rows and journals remain unchanged. */
+/** Schema 4 adds an identity index; historical rows, restore permissions and epochs remain unchanged. */
 private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHelper(
-    context, name, null, 3,
+    context, name, null, 4,
     DatabaseErrorHandler { throw SQLiteException("Occurrence database is corrupt; original file retained") },
 ) {
     override fun onConfigure(db: SQLiteDatabase) {
@@ -408,12 +442,15 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(oldVersion in 1..2 && newVersion == 3) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
+        check(oldVersion in 1..3 && newVersion == 4) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
         // SQLiteOpenHelper wraps onUpgrade and its version change in one transaction.
-        validate(db, if (oldVersion == 1) V1_SCHEMA else V2_SCHEMA)
+        validate(db, when (oldVersion) { 1 -> V1_SCHEMA; 2 -> V2_SCHEMA; else -> V3_SCHEMA })
         if (oldVersion == 1) SCHEDULING_SCHEMA.values.forEach(db::execSQL)
-        RESTORE_SCHEMA.values.forEach(db::execSQL)
-        initializeMetadata(db)
+        if (oldVersion < 3) {
+            RESTORE_SCHEMA.values.forEach(db::execSQL)
+            initializeMetadata(db)
+        }
+        RECONCILIATION_SCHEMA.values.forEach(db::execSQL)
         validate(db, SCHEMA)
     }
 
@@ -525,7 +562,11 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
             )""",
         )
         private val V2_SCHEMA = V1_SCHEMA + SCHEDULING_SCHEMA
-        private val SCHEMA = V2_SCHEMA + RESTORE_SCHEMA
+        private val V3_SCHEMA = V2_SCHEMA + RESTORE_SCHEMA
+        private val RECONCILIATION_SCHEMA = linkedMapOf(
+            "scheduling_identity" to "CREATE INDEX scheduling_identity ON scheduling_attempts(occurrence_id, generation, revision, sequence)",
+        )
+        private val SCHEMA = V3_SCHEMA + RECONCILIATION_SCHEMA
     }
 }
 
