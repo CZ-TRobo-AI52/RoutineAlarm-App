@@ -29,7 +29,7 @@ class TestAlarmActivity : Activity() {
     }
     override fun onResume() {
         super.onResume()
-        TestAlarmRuntime.restoreFuture(this)
+        TestAlarmRuntime.requestRecovery(this)
         render()
     }
 

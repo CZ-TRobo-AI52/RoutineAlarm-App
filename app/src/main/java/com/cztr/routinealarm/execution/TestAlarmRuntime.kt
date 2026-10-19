@@ -10,7 +10,6 @@ import android.util.Log
 import com.cztr.routinealarm.AlarmScheduler
 import com.cztr.routinealarm.occurrence.*
 import java.time.Clock
-import java.time.Instant
 
 /** Android adapter for the M2.2a test path. Uses the existing occurrences.db. */
 object TestAlarmRuntime {
@@ -57,25 +56,37 @@ object TestAlarmRuntime {
         repository(context).use { scheduleCurrent(context, occurrence, it, futureOnly = false) }
     }
 
-    /** Replay the waiting projection into AlarmManager, without inventing a user action.
-     * Overdue/TRIGGERED entries require explicit recovery in the test history. A process
-     * failure between DB commit and platform scheduling is repaired on the next entry.
-     */
+    /** Enqueue only: no occurrence database is opened on the Activity/Receiver thread. */
+    fun requestRecovery(context: Context): Boolean = TestAlarmRecoveryService.request(context)
+
+    /** Synchronous diagnostic/test drain. Production entry points use requestRecovery. */
     fun restoreFuture(context: Context) {
+        val cycleId = java.util.UUID.randomUUID().toString()
         try {
-            repository(context).use { repo ->
-                reconcileKnown(context, repo)
-                repo.futureTests(Instant.now()).filter { repo.isDeliveryAllowed(it.id) }.forEach { occurrence ->
-                    try {
-                        scheduleCurrent(context, occurrence, repo, futureOnly = true)
-                    } catch (error: Exception) {
-                        // One failed platform call must not discard the remaining durable intents.
-                        Log.e("TestAlarm", "Zukünftiger Testwecker konnte nicht wiederhergestellt werden", error)
-                    }
-                }
+            withRecovery(context) { recover ->
+                var complete: Boolean
+                do { complete = recover(cycleId) { false }.complete } while (!complete)
             }
         } catch (error: Exception) {
             Log.e("TestAlarm", "Testwecker-Wiederherstellung fehlgeschlagen; Daten bleiben erhalten", error)
+        }
+    }
+
+    internal fun restoreBatch(context: Context, cycleId: String,
+        shouldStop: () -> Boolean = { false }): RecoveryBatchResult =
+        withRecovery(context) { recover -> recover(cycleId, shouldStop) }
+
+    /** Keep one validated database open across batches; no transaction spans platform calls. */
+    internal fun <T> withRecovery(context: Context,
+        work: ((String, () -> Boolean) -> RecoveryBatchResult) -> T): T = repository(context).use { repo ->
+        val store = AtomicRecoveryCursorStore(java.io.File(context.noBackupFilesDir, "test-recovery-cursor.bin"))
+        work { cycleId, shouldStop ->
+            TestAlarmRecovery(repo, Clock.systemDefaultZone(),
+                schedule = { scheduleCurrent(context, it, repo, futureOnly = true) },
+                cancel = { cancelObsolete(context, repo, it) },
+                store = store, cycleId = cycleId,
+                onFailure = { Log.e("TestAlarm", "Einzelner Wiederherstellungsschritt fehlgeschlagen", it) },
+            ).runBatch(shouldStop = shouldStop)
         }
     }
 
@@ -90,24 +101,27 @@ object TestAlarmRuntime {
 
     private fun reconcileKnown(context: Context, repo: SqliteOccurrenceRepository, occurrenceId: String? = null) {
         try {
-            TestAlarmReconciliation(repo, cancel = { token ->
-                val intent = putToken(Intent(context, TestAlarmReceiver::class.java), token)
-                val pending = PendingIntent.getBroadcast(context, 0, intent,
-                    PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
-                // A token handle says nothing about whether AlarmManager holds an alarm.
-                if (pending == null) CancellationObservation.TOKEN_NOT_FOUND
-                else if (!TestAlarmReconciliation.isObsolete(repo, token)) CancellationObservation.NO_LONGER_OBSOLETE
-                else {
-                    context.getSystemService(AlarmManager::class.java).cancel(pending)
-                    pending.cancel()
-                    CancellationObservation.CALL_RETURNED
-                }
-            }, onFailure = { error ->
+            TestAlarmReconciliation(repo, cancel = { cancelObsolete(context, repo, it) }, onFailure = { error ->
                 Log.e("TestAlarm", "Rücknahme einer alten Testalarm-Kennung nicht bestätigt", error)
             }).reconcile(occurrenceId)
         } catch (error: Exception) {
             // A cleanup/query failure must not suppress unrelated future scheduling.
             Log.e("TestAlarm", "Abgleich alter Testalarm-Kennungen nicht abgeschlossen", error)
+        }
+    }
+
+    private fun cancelObsolete(context: Context, repo: SqliteOccurrenceRepository,
+        token: AlarmDelivery): CancellationObservation {
+        val intent = putToken(Intent(context, TestAlarmReceiver::class.java), token)
+        val pending = PendingIntent.getBroadcast(context, 0, intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
+        // A handle does not prove that AlarmManager holds an alarm; recheck before the effect.
+        return if (pending == null) CancellationObservation.TOKEN_NOT_FOUND
+        else if (!TestAlarmReconciliation.isObsolete(repo, token)) CancellationObservation.NO_LONGER_OBSOLETE
+        else {
+            context.getSystemService(AlarmManager::class.java).cancel(pending)
+            pending.cancel()
+            CancellationObservation.CALL_RETURNED
         }
     }
 
