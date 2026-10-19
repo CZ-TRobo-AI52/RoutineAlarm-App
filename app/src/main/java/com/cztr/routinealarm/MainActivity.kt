@@ -33,6 +33,7 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private val german = Locale.GERMAN
+    private val testStatusLoader = com.cztr.routinealarm.execution.LatestUiLoader()
 
     private var selectedDay: DayOfWeek =
         ZonedDateTime.now().dayOfWeek
@@ -59,6 +60,16 @@ class MainActivity : Activity() {
         }
 
         render()
+    }
+
+    override fun onStop() {
+        testStatusLoader.invalidate()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        testStatusLoader.close()
+        super.onDestroy()
     }
 
     private fun render() {
@@ -152,20 +163,40 @@ class MainActivity : Activity() {
     }
 
     private fun addTestAlarmCard(root: LinearLayout) {
-        val saved = runCatching {
-            com.cztr.routinealarm.execution.TestAlarmRuntime.repository(this).use { repo ->
-                repo.openTests().filter { repo.isDeliveryAllowed(it.id) }
-            }
-        }.getOrNull()
-        val status = TestAlarmStatusPresenter.present(saved, Instant.now(), ZoneId.systemDefault(),
-            AlarmScheduler.canScheduleExact(this))
         val card = cardContainer()
+        card.addView(sectionLabel("TESTWECKER"))
+        card.addView(primaryText("Teststatus wird geladen …"))
+        card.addView(secondaryButton("Testverlauf öffnen").apply {
+            setOnClickListener { openTestHistory() }
+        })
+        root.addView(card, spacedMatchWidth())
+        val app = applicationContext
+        val now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        testStatusLoader.load({
+            com.cztr.routinealarm.execution.TestAlarmRuntime.repository(app).use { repo ->
+                repo.statusSummary(now)
+            }
+        }) { result ->
+            if (!isFinishing && !isDestroyed) {
+                val status = TestAlarmStatusPresenter.presentSummary(result.getOrNull(), now, zone,
+                    AlarmScheduler.canScheduleExact(this))
+                showTestAlarmStatus(card, status)
+            }
+        }
+    }
+
+    private fun showTestAlarmStatus(card: LinearLayout, status: TestAlarmStatus) {
+        card.removeAllViews()
         card.addView(sectionLabel("TESTWECKER"))
         card.addView(primaryText(status.title))
 
         if (status.openCount == null) {
             card.addView(secondaryText(
                 "Die gespeicherten Testwecker konnten nicht gelesen werden. Öffne den Verlauf erneut."))
+            card.addView(secondaryButton("Teststatus erneut laden").apply {
+                setOnClickListener { render() }
+            })
         } else {
             card.addView(secondaryText(
                 "Gespeicherter Stand: ${status.openCount} offen · ${status.triggeredCount} ausgelöst · ${status.overdueCount} überfällig"))
@@ -190,7 +221,6 @@ class MainActivity : Activity() {
         card.addView(secondaryButton("Testverlauf öffnen").apply {
             setOnClickListener { openTestHistory() }
         })
-        root.addView(card, spacedMatchWidth())
     }
 
     private fun openTestHistory() {
