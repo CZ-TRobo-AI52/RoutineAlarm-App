@@ -9,6 +9,8 @@ import android.view.ViewGroup
 import android.widget.Button
 import com.cztr.routinealarm.AlarmScheduler
 import com.cztr.routinealarm.execution.*
+import com.cztr.routinealarm.support.awaitUi
+import com.cztr.routinealarm.support.awaitUiReadersStopped
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -123,6 +125,7 @@ class TestAlarmIntegrationTest {
         val activity = Robolectric.buildActivity(TestAlarmActivity::class.java,
             intent(item, TestAlarmActivity::class.java)).setup()
         try {
+            awaitUi(activity.get())
             buttons(activity.get().window.decorView).single { it.text == "Erledigt" }.performClick()
             assertTrue(activity.get().isFinishing)
             TestAlarmRuntime.repository(context).use {
@@ -130,7 +133,7 @@ class TestAlarmIntegrationTest {
                 assertEquals(Actor.USER, it.history(item.id).last().actor)
                 assertEquals("DONE", it.history(item.id).last().actionType)
             }
-        } finally { activity.pause().stop().destroy() }
+        } finally { activity.pause().stop().destroy(); awaitUiReadersStopped(activity.get()) }
     }
 
     @Test fun activitySnoozeSchedulesSameOccurrenceWithNewGeneration() {
@@ -138,6 +141,7 @@ class TestAlarmIntegrationTest {
         val activity = Robolectric.buildActivity(TestAlarmActivity::class.java,
             intent(item, TestAlarmActivity::class.java)).setup()
         try {
+            awaitUi(activity.get())
             buttons(activity.get().window.decorView).single { it.text == "5 Minuten später" }.performClick()
             val snoozed = repo.get(item.id)!!
             assertEquals(OccurrenceStatus.SNOOZED, snoozed.status)
@@ -145,7 +149,7 @@ class TestAlarmIntegrationTest {
             assertEquals(item.generation + 1, snoozed.generation)
             val alarm = shadowOf(context.getSystemService(android.app.AlarmManager::class.java)).scheduledAlarms.single()
             assertEquals(AlarmDelivery.from(snoozed), TestAlarmRuntime.token(shadowOf(alarm.operation).savedIntent))
-        } finally { activity.pause().stop().destroy() }
+        } finally { activity.pause().stop().destroy(); awaitUiReadersStopped(activity.get()) }
     }
 
     @Test fun staleActivityCannotOverwriteSnoozeOrStopOtherAlarm() {
@@ -154,11 +158,13 @@ class TestAlarmIntegrationTest {
         val activity = Robolectric.buildActivity(TestAlarmActivity::class.java,
             intent(a, TestAlarmActivity::class.java)).setup()
         try {
+            awaitUi(activity.get())
             TestAlarmRuntime.coordinator(repo).act(AlarmDelivery.from(a), ActionType.SNOOZE, 5)
             buttons(activity.get().window.decorView).single { it.text == "Erledigt" }.performClick()
+            awaitUi(activity.get())
             assertEquals(OccurrenceStatus.SNOOZED, repo.get(a.id)!!.status)
             assertEquals(b, repo.get(b.id))
             assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
-        } finally { activity.pause().stop().destroy() }
+        } finally { activity.pause().stop().destroy(); awaitUiReadersStopped(activity.get()) }
     }
 }
