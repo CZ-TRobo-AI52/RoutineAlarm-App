@@ -69,12 +69,15 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
     private fun refreshOutput(speakNow: Boolean) {
         handler.removeCallbacks(repeat)
         try {
-            val item = TestAlarmRuntime.repository(this).use { repo ->
+            val selected = TestAlarmRuntime.repository(this).use { repo ->
                 val active = current?.let { TestAlarmRuntime.coordinator(repo).active(it) }
-                active ?: repo.openTests().firstOrNull { it.status == OccurrenceStatus.TRIGGERED }
+                val item = active ?: repo.openTests().firstOrNull {
+                    it.status == OccurrenceStatus.TRIGGERED && repo.isDeliveryAllowed(it.id)
+                }
+                item?.let { it to AlarmDelivery.from(it, repo.deliveryEpoch()) }
             }
-            if (item == null) { shutdown(); return }
-            val token = AlarmDelivery.from(item)
+            if (selected == null) { shutdown(); return }
+            val (item, token) = selected
             val changed = token != current
             if (changed) tts?.stop()
             current = token

@@ -15,6 +15,7 @@ import java.time.format.DateTimeFormatter
 class TestAlarmActivity : Activity() {
     private var token: AlarmDelivery? = null
     private var tokenWasSupplied = false
+    private var historyOffset = 0
     private val time = DateTimeFormatter.ofPattern("dd.MM. HH:mm:ss").withZone(ZoneId.systemDefault())
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,6 +52,7 @@ class TestAlarmActivity : Activity() {
     }
 
     private fun openHistory() {
+        historyOffset = 0
         val historyIntent = Intent(this, javaClass)
         setIntent(historyIntent)
         readIntent(historyIntent)
@@ -85,22 +87,28 @@ class TestAlarmActivity : Activity() {
                     root.text("Die Alarmidentität fehlt oder wurde verändert.")
                 } else {
                     root.text("Testverlauf", 26f)
-                    root.text("Die letzten 20 Testwecker. Sie zählen nicht als persönliche Routinen.")
+                    root.text("Testwecker ab Eintrag ${historyOffset + 1}, höchstens 20 je Seite. Sie zählen nicht als persönliche Routinen.")
+                    if (repo.restorePausedCount() > 0) root.text(
+                        "${repo.restorePausedCount()} übernommene Ereignisse sind pausiert. Hier werden Testwecker angezeigt. Gesicherte Planungsrückmeldungen gehören zum früheren Gerät bzw. Datenstand und bestätigen keine aktuelle Planung.")
                     root.text("Zukünftige Testwecker werden bei App-Rückkehr und nach einem Neustart automatisch wieder eingeplant, sobald genaue Alarme erlaubt sind. Offene und überfällige Tests kannst du hier selbst erneut planen oder öffnen. Vergangene Weckzeiten lösen nur beim manuellen erneuten Planen sofort aus.")
                     if (!com.cztr.routinealarm.AlarmScheduler.canScheduleExact(this)) {
                         root.text("Genaue Alarme sind nicht erlaubt. Bitte die Berechtigung in den Systemeinstellungen aktivieren; gespeicherte Tests bleiben erhalten.")
                     }
-                    val recent = repo.recentTests()
-                    if (recent.isEmpty()) root.text("Noch keine Testwecker vorhanden.")
+                    val recent = repo.recentTests(historyOffset)
+                    val deliveryEpoch = repo.deliveryEpoch()
+                    if (recent.isEmpty()) root.text("Keine weiteren Testwecker vorhanden.")
                     recent.forEach { item ->
                         root.text("${time.format(item.plannedAt)} · ${TestAlarmRuntime.label(item.status)}", 19f)
                         root.text("Snooze: ${item.snoozeCount} · gesamt ${item.totalSnoozeMinutes} Min.\n" +
                             "Aktuelle Weckzeit: ${time.format(item.currentTriggerAt)}")
                         root.text(TestAlarmRuntime.schedulingLabel(repo.schedulingAttempts(item.id, latestOnly = true).firstOrNull(), item))
-                        when (item.status) {
+                        if (!repo.isDeliveryAllowed(item.id)) {
+                            root.text("Aus Sicherung übernommen · pausiert")
+                            root.button("Wiederhergestellten Test aktivieren") { confirmActivation(item.id) }
+                        } else when (item.status) {
                             OccurrenceStatus.TRIGGERED -> root.button("Offenen Testwecker öffnen") {
                                 runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
-                                startActivity(TestAlarmRuntime.putToken(Intent(this, javaClass), AlarmDelivery.from(item)))
+                                startActivity(TestAlarmRuntime.putToken(Intent(this, javaClass), AlarmDelivery.from(item, deliveryEpoch)))
                             }
                             OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED -> root.button("Erneut planen") {
                                 runCatching { TestAlarmRuntime.schedule(this, item) }
@@ -110,6 +118,14 @@ class TestAlarmActivity : Activity() {
                             else -> Unit
                         }
                     }
+                    if (historyOffset > 0) root.button("Neuere Tests") {
+                        historyOffset = (historyOffset - 20).coerceAtLeast(0)
+                        render()
+                    }
+                    if (recent.size == 20) root.button("Ältere Tests") {
+                        historyOffset += 20
+                        render()
+                    }
                 }
                 root.button("Schließen") { finish() }
             }
@@ -117,6 +133,29 @@ class TestAlarmActivity : Activity() {
             root.text("Der Testverlauf konnte nicht gelesen werden. Die Daten bleiben erhalten.")
             root.button("Erneut versuchen") { render() }
         }
+    }
+
+    private fun confirmActivation(id: String) {
+        android.app.AlertDialog.Builder(this).setTitle("Testwecker aktivieren")
+            .setMessage("Dieser übernommene Test wird wieder aktiv. Vergangene Weckzeiten und bereits ausgelöste Tests können sofort klingeln. Die übrigen übernommenen Tests bleiben pausiert.")
+            .setNegativeButton("Abbrechen", null)
+            .setPositiveButton("Aktivieren") { _, _ ->
+                try {
+                    val restored = TestAlarmRuntime.repository(this).use { repo ->
+                        check(repo.activateRestored(id)) { "Dieser Test wurde bereits aktiviert." }
+                        val item = requireNotNull(repo.get(id))
+                        item to AlarmDelivery.from(item, repo.deliveryEpoch())
+                    }
+                    if (restored.first.status == OccurrenceStatus.TRIGGERED) {
+                        TestAlarmRuntime.refresh(this)
+                        startActivity(TestAlarmRuntime.putToken(Intent(this, javaClass), restored.second))
+                    } else TestAlarmRuntime.schedule(this, restored.first)
+                    toast("Aktivierung gespeichert. Tatsächliche Alarmausgabe bitte prüfen.")
+                } catch (_: Exception) {
+                    toast("Aktivierung oder Planung nicht bestätigt. Aktuellen Verlauf prüfen; eine gespeicherte Aktivierung bleibt erhalten.")
+                }
+                render()
+            }.show()
     }
 
     private fun act(expected: AlarmDelivery, type: ActionType) {

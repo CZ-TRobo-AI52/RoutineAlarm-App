@@ -7,10 +7,12 @@ import java.time.Instant
 import java.util.UUID
 
 /** A delivery is scoped to one persisted revision, never to its display title. */
-data class AlarmDelivery(val occurrenceId: String, val generation: Long, val revision: Long) {
-    val valid: Boolean get() = occurrenceId.isNotBlank() && generation >= 0 && revision >= 0
+data class AlarmDelivery(val occurrenceId: String, val generation: Long, val revision: Long,
+    val epoch: String = "") {
+    val valid: Boolean get() = occurrenceId.isNotBlank() && generation >= 0 && revision >= 0 &&
+        epoch.length <= 64 && epoch.all { it.isLetterOrDigit() || it == '-' }
     companion object {
-        fun from(item: RoutineOccurrence) = AlarmDelivery(item.id, item.generation, item.revision)
+        fun from(item: RoutineOccurrence, epoch: String = "") = AlarmDelivery(item.id, item.generation, item.revision, epoch)
     }
 }
 
@@ -35,7 +37,7 @@ class TestAlarmCoordinator(private val repository: OccurrenceRepository, private
     }
 
     fun trigger(delivery: AlarmDelivery): RoutineOccurrence? {
-        if (!delivery.valid) return null
+        if (!allowed(delivery)) return null
         val current = repository.get(delivery.occurrenceId)?.takeIf { it.isTest } ?: return null
         if (current.generation != delivery.generation) return null
         // A redelivery reads current state, not an old ActionResult snapshot. Do not
@@ -59,14 +61,14 @@ class TestAlarmCoordinator(private val repository: OccurrenceRepository, private
     }
 
     fun active(token: AlarmDelivery): RoutineOccurrence? =
-        if (!token.valid) null else repository.get(token.occurrenceId)?.takeIf {
+        if (!allowed(token)) null else repository.get(token.occurrenceId)?.takeIf {
             it.isTest && it.status == OccurrenceStatus.TRIGGERED &&
                 it.generation == token.generation && it.revision == token.revision
         }
 
     fun act(token: AlarmDelivery, type: ActionType, minutes: Int? = null): ActionResult? {
         require(type in setOf(ActionType.DONE, ActionType.SKIP, ActionType.SNOOZE))
-        if (!token.valid || repository.get(token.occurrenceId)?.isTest != true) return null
+        if (!allowed(token) || repository.get(token.occurrenceId)?.isTest != true) return null
         return repository.apply(ExecutionAction(
             id = "test-user:${UUID.randomUUID()}", occurrenceId = token.occurrenceId,
             type = type, actor = Actor.USER, occurredAt = clock.instant(),
@@ -74,4 +76,7 @@ class TestAlarmCoordinator(private val repository: OccurrenceRepository, private
             snoozeMinutes = minutes, source = "test-alarm-screen",
         ))
     }
+
+    private fun allowed(token: AlarmDelivery) = token.valid &&
+        token.epoch == repository.deliveryEpoch() && repository.isDeliveryAllowed(token.occurrenceId)
 }

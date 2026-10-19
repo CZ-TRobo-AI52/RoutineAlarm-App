@@ -15,6 +15,8 @@ import java.time.ZoneId
 import java.util.UUID
 
 interface OccurrenceRepository : Closeable {
+    fun deliveryEpoch(): String = ""
+    fun isDeliveryAllowed(id: String): Boolean = true
     fun materialize(items: List<RoutineOccurrence>): Int
     fun get(id: String): RoutineOccurrence?
     fun listForDate(date: LocalDate, zone: ZoneId, includeTests: Boolean = false): List<RoutineOccurrence>
@@ -62,6 +64,52 @@ class SqliteOccurrenceRepository(
 ) : OccurrenceRepository {
     private val helper = OccurrenceDatabase(context.applicationContext, name)
 
+    /** Capture all five data tables in one SQLite snapshot; no provider I/O holds this transaction. */
+    fun exportBackup(): ByteArray {
+        val snapshot = transaction(OccurrenceBackup::read)
+        OccurrenceBackup.validate(snapshot)
+        return OccurrenceBackup.encode(snapshot)
+    }
+
+    /** A restore never replaces or merges existing user data and invokes no platform effect. */
+    fun restoreBackup(bytes: ByteArray): Int {
+        val snapshot = OccurrenceBackup.decode(bytes)
+        return transaction { db ->
+            OccurrenceBackup.tables.forEach { table ->
+                db.rawQuery("SELECT 1 FROM ${table.name} LIMIT 1", null).use {
+                    check(!it.moveToFirst()) { "Restore requires an empty occurrence store; existing data was retained" }
+                }
+            }
+            db.rawQuery("SELECT 1 FROM restored_occurrences LIMIT 1", null).use { check(!it.moveToFirst()) }
+            OccurrenceBackup.insert(db, snapshot)
+            check(db.update("store_metadata", ContentValues().apply { put("delivery_epoch", UUID.randomUUID().toString()) },
+                "singleton = 1", null) == 1)
+            db.execSQL("""INSERT INTO restored_occurrences(occurrence_id)
+                SELECT occurrence_id FROM occurrences WHERE status IN ('SCHEDULED','SNOOZED','TRIGGERED')""")
+            snapshot.tables[1].size
+        }
+    }
+
+    override fun deliveryEpoch(): String = helper.readableDatabase.rawQuery(
+        "SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null,
+    ).use { check(it.moveToFirst()); it.getString(0) }
+
+    override fun isDeliveryAllowed(id: String): Boolean = deliveryAllowed(helper.readableDatabase, id)
+
+    private fun deliveryAllowed(db: SQLiteDatabase, id: String): Boolean = db.rawQuery(
+        """SELECT 1 FROM occurrences o WHERE o.occurrence_id = ? AND NOT EXISTS
+            (SELECT 1 FROM restored_occurrences r WHERE r.occurrence_id = o.occurrence_id)""", arrayOf(id),
+    ).use { it.moveToFirst() }
+
+    fun restorePausedCount(): Int = helper.readableDatabase.rawQuery(
+        "SELECT COUNT(*) FROM restored_occurrences", null,
+    ).use { it.moveToFirst(); it.getInt(0) }
+
+    /** Explicit activation changes permission, never historical occurrence state or journal evidence. */
+    fun activateRestored(id: String): Boolean = transaction { db ->
+        db.delete("restored_occurrences", "occurrence_id = ?", arrayOf(id)) == 1
+    }
+
     override fun materialize(items: List<RoutineOccurrence>): Int = transaction { db ->
         var inserted = 0
         items.forEach { occurrence ->
@@ -103,12 +151,15 @@ class SqliteOccurrenceRepository(
         while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
     } }
 
-    fun recentTests(): List<RoutineOccurrence> = helper.readableDatabase.query(
+    fun recentTests(offset: Int = 0): List<RoutineOccurrence> {
+        require(offset >= 0)
+        return helper.readableDatabase.query(
         "occurrences", arrayOf("snapshot"), "is_test = 1", null, null, null,
-        "planned_at DESC, occurrence_id DESC", "20",
+        "planned_at DESC, occurrence_id DESC", "$offset,20",
     ).use { cursor -> buildList {
         while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
     } }
+    }
 
     override fun listForDate(date: LocalDate, zone: ZoneId, includeTests: Boolean): List<RoutineOccurrence> {
         val filter = "nominal_date = ? AND zone_id = ?" + if (includeTests) "" else " AND is_test = 0"
@@ -180,6 +231,7 @@ class SqliteOccurrenceRepository(
 
     /** A successful return means the attempt commit completed before any platform effect. */
     fun beginSchedulingAttempt(expected: RoutineOccurrence, futureOnly: Boolean): SchedulingAttempt? = transaction { db ->
+        check(deliveryAllowed(db, expected.id)) { "Dieser wiederhergestellte Testwecker muss zuerst ausdrücklich aktiviert werden." }
         val current = get(db, expected.id)
         check(current == expected && current.isTest && current.status in
             setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED)) { "Dieser Testwecker wurde bereits geändert." }
@@ -337,9 +389,9 @@ class SqliteOccurrenceRepository(
     }
 }
 
-/** Schema 2 adds scheduling observations; the occurrence projection and execution journal remain unchanged. */
+/** Schema 3 adds local restore permissions; historical rows and journals remain unchanged. */
 private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHelper(
-    context, name, null, 2,
+    context, name, null, 3,
     DatabaseErrorHandler { throw SQLiteException("Occurrence database is corrupt; original file retained") },
 ) {
     override fun onConfigure(db: SQLiteDatabase) {
@@ -352,13 +404,16 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
             .use { it.count }
         check(existing == 0) { "Unknown unversioned database; refusing to replace user data" }
         SCHEMA.values.forEach(db::execSQL)
+        initializeMetadata(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(oldVersion == 1 && newVersion == 2) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
+        check(oldVersion in 1..2 && newVersion == 3) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
         // SQLiteOpenHelper wraps onUpgrade and its version change in one transaction.
-        validate(db, V1_SCHEMA)
-        SCHEDULING_SCHEMA.values.forEach(db::execSQL)
+        validate(db, if (oldVersion == 1) V1_SCHEMA else V2_SCHEMA)
+        if (oldVersion == 1) SCHEDULING_SCHEMA.values.forEach(db::execSQL)
+        RESTORE_SCHEMA.values.forEach(db::execSQL)
+        initializeMetadata(db)
         validate(db, SCHEMA)
     }
 
@@ -369,6 +424,17 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         validate(db, SCHEMA)
+        db.rawQuery("SELECT singleton, delivery_epoch FROM store_metadata", null).use {
+            check(it.moveToFirst() && it.getInt(0) == 1)
+            val epoch = it.getString(1)
+            check(epoch.isEmpty() || runCatching { UUID.fromString(epoch).toString() == epoch }.getOrDefault(false))
+            check(!it.moveToNext()) { "Invalid store metadata" }
+        }
+    }
+
+    private fun initializeMetadata(db: SQLiteDatabase) {
+        // Existing alpha05 tokens have no epoch. Only an explicit import rotates it.
+        db.execSQL("INSERT INTO store_metadata(singleton, delivery_epoch) VALUES (1, '')")
     }
 
     private fun validate(db: SQLiteDatabase, expected: Map<String, String>) {
@@ -450,7 +516,16 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
             "receipts_no_delete" to """CREATE TRIGGER receipts_no_delete BEFORE DELETE ON scheduling_receipts
                 BEGIN SELECT RAISE(ABORT, 'Scheduling receipts are append-only'); END""",
         )
-        private val SCHEMA = V1_SCHEMA + SCHEDULING_SCHEMA
+        private val RESTORE_SCHEMA = linkedMapOf(
+            "store_metadata" to """CREATE TABLE store_metadata (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1), delivery_epoch TEXT NOT NULL
+            )""",
+            "restored_occurrences" to """CREATE TABLE restored_occurrences (
+                occurrence_id TEXT PRIMARY KEY NOT NULL REFERENCES occurrences(occurrence_id)
+            )""",
+        )
+        private val V2_SCHEMA = V1_SCHEMA + SCHEDULING_SCHEMA
+        private val SCHEMA = V2_SCHEMA + RESTORE_SCHEMA
     }
 }
 

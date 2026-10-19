@@ -153,7 +153,9 @@ class MainActivity : Activity() {
 
     private fun addTestAlarmCard(root: LinearLayout) {
         val saved = runCatching {
-            com.cztr.routinealarm.execution.TestAlarmRuntime.repository(this).use { it.openTests() }
+            com.cztr.routinealarm.execution.TestAlarmRuntime.repository(this).use { repo ->
+                repo.openTests().filter { repo.isDeliveryAllowed(it.id) }
+            }
         }.getOrNull()
         val status = TestAlarmStatusPresenter.present(saved, Instant.now(), ZoneId.systemDefault(),
             AlarmScheduler.canScheduleExact(this))
@@ -961,6 +963,11 @@ class MainActivity : Activity() {
                 exactGranted
             )
         )
+
+        card.addView(secondaryButton("Testverlauf sichern / laden").apply {
+            setOnClickListener { startActivity(Intent(this@MainActivity,
+                com.cztr.routinealarm.backup.BackupActivity::class.java)) }
+        })
 
         if (!notificationGranted) {
             card.addView(

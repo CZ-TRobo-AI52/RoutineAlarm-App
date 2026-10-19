@@ -38,6 +38,12 @@ enthält diese Fortsetzung noch nicht; seinen manuellen Wiederaufnahmeweg
 beschreibt der [M2.2a-Testbericht](M2.2-test-journal.md).
 
 Die APK ist eine Testversion. Ein erfolgreicher Build ersetzt keinen Handytest.
+Seit [alpha06](ALPHA06.md) kann der Testverlauf als Datei gesichert und in eine
+leere Testinstallation übernommen werden. Übernommene offene Tests bleiben bis
+zur einzelnen Bestätigung pausiert. Die Datei ist unverschlüsselt; Wochenplan-
+Einstellungen sind nicht enthalten. Den Restore bitte auf einer separaten leeren
+Testinstallation prüfen, ohne den vorhandenen Verlauf zurückzusetzen.
+
 Die bestehende Release-App muss dafür weder deinstalliert noch zurückgesetzt werden.
 Spätere Updates dieser Test-App müssen mit demselben Debug-Schlüssel signiert sein;
 lokale und GitHub-Actions-Builds können unterschiedliche Debug-Schlüssel verwenden.
