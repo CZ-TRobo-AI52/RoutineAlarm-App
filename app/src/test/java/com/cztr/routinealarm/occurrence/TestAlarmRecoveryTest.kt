@@ -9,6 +9,8 @@ import com.cztr.routinealarm.ScheduleState
 import com.cztr.routinealarm.execution.TestAlarmActivity
 import com.cztr.routinealarm.execution.TestAlarmReceiver
 import com.cztr.routinealarm.execution.TestAlarmRuntime
+import com.cztr.routinealarm.support.awaitUi
+import com.cztr.routinealarm.support.awaitUiReadersStopped
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -116,18 +118,20 @@ class TestAlarmRecoveryTest {
         val main = Robolectric.buildActivity(MainActivity::class.java).setup()
         try {
             assertTrue(tokens().isEmpty())
+            awaitUi(main.get())
             runQueuedRecovery(context)
             assertEquals(listOf(AlarmDelivery.from(item)), tokens())
         }
-        finally { main.pause().stop().destroy() }
+        finally { main.pause().stop().destroy(); awaitUiReadersStopped(main.get()) }
         cancelPlatformAlarms()
         val history = Robolectric.buildActivity(TestAlarmActivity::class.java).setup()
         try {
             assertTrue(tokens().isEmpty())
+            awaitUi(history.get())
             runQueuedRecovery(context)
             assertEquals(listOf(AlarmDelivery.from(item)), tokens())
         }
-        finally { history.pause().stop().destroy() }
+        finally { history.pause().stop().destroy(); awaitUiReadersStopped(history.get()) }
     }
 
     @Test fun recoveryKeepsOverdueAndTriggeredTestsForExplicitUserRecovery() {

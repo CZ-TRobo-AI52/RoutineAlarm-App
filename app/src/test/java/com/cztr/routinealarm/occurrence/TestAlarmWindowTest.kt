@@ -9,6 +9,8 @@ import android.view.WindowManager
 import android.widget.Button
 import com.cztr.routinealarm.execution.TestAlarmActivity
 import com.cztr.routinealarm.execution.TestAlarmRuntime
+import com.cztr.routinealarm.support.awaitUi
+import com.cztr.routinealarm.support.awaitUiReadersStopped
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -72,8 +74,8 @@ class TestAlarmWindowTest {
 
     @Test fun historyOpenedDirectlyDoesNotWakeOrCoverTheLockScreen() {
         val controller = Robolectric.buildActivity(TestAlarmActivity::class.java).setup()
-        try { assertAlarmWindow(controller.get(), false) }
-        finally { controller.pause().stop().destroy() }
+        try { assertAlarmWindow(controller.get(), false); awaitUi(controller.get()) }
+        finally { controller.pause().stop().destroy(); awaitUiReadersStopped(controller.get()) }
     }
 
     @Test fun openingHistoryFromAlarmClearsAllAlarmWindowFlags() {
@@ -84,12 +86,14 @@ class TestAlarmWindowTest {
         try {
             val activity = controller.get()
             assertAlarmWindow(activity, true)
+            awaitUi(activity)
             buttons(activity.window.decorView).single { it.text == "Testverlauf öffnen" }.performClick()
             assertAlarmWindow(activity, false)
             assertNull(activity.intent.data)
             assertEquals(item, repo.get(item.id))
+            awaitUi(activity)
             assertTrue(buttons(activity.window.decorView).any { it.text == "Offenen Testwecker öffnen" })
-        } finally { controller.pause().stop().destroy() }
+        } finally { controller.pause().stop().destroy(); awaitUiReadersStopped(controller.get()) }
     }
 
     @Test @Config(sdk = [31])
@@ -101,13 +105,15 @@ class TestAlarmWindowTest {
         try {
             val activity = controller.get()
             assertAlarmWindow(activity, true)
+            awaitUi(activity)
             ShadowAlarmManager.setCanScheduleExactAlarms(false)
             buttons(activity.window.decorView).single { it.text == "5 Minuten später" }.performClick()
             assertAlarmWindow(activity, false)
             assertNull(activity.intent.data)
             assertFalse(activity.isFinishing)
             assertEquals(OccurrenceStatus.SNOOZED, repo.get(item.id)!!.status)
+            awaitUi(activity)
             assertTrue(buttons(activity.window.decorView).any { it.text == "Erneut planen" })
-        } finally { controller.pause().stop().destroy() }
+        } finally { controller.pause().stop().destroy(); awaitUiReadersStopped(controller.get()) }
     }
 }

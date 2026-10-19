@@ -11,6 +11,8 @@ import android.view.ViewGroup
 import android.widget.Button
 import com.cztr.routinealarm.BootReceiver
 import com.cztr.routinealarm.execution.*
+import com.cztr.routinealarm.support.awaitUi
+import com.cztr.routinealarm.support.awaitUiReadersStopped
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -110,6 +112,7 @@ class RestoredAlarmRuntimeTest {
         val item = restore()
         val activity = Robolectric.buildActivity(TestAlarmActivity::class.java).setup()
         try {
+            awaitUi(activity.get())
             fun clickActivate() = buttons(activity.get().window.decorView)
                 .single { it.text == "Wiederhergestellten Test aktivieren" }.performClick()
             clickActivate()
@@ -120,9 +123,10 @@ class RestoredAlarmRuntimeTest {
             clickActivate()
             ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
             shadowOf(Looper.getMainLooper()).idle()
+            awaitUi(activity.get())
             assertTrue(repo.isDeliveryAllowed(item.id))
             assertEquals(1, shadowOf(context.getSystemService(AlarmManager::class.java)).scheduledAlarms.size)
-        } finally { activity.pause().stop().destroy() }
+        } finally { activity.pause().stop().destroy(); awaitUiReadersStopped(activity.get()) }
     }
 
     @Test fun tokenEpochMustMatchBothIntentDataAndExtras() {
@@ -148,17 +152,21 @@ class RestoredAlarmRuntimeTest {
         }
         val activity = Robolectric.buildActivity(TestAlarmActivity::class.java).setup()
         try {
+            awaitUi(activity.get())
             assertEquals(20, buttons(activity.get().window.decorView).count { it.text == "Wiederhergestellten Test aktivieren" })
             val next = buttons(activity.get().window.decorView).firstOrNull { it.text == "Ältere Tests" }
             assertNotNull("Every restored test needs a reachable activation entry point", next)
             next!!.performClick()
+            awaitUi(activity.get())
             buttons(activity.get().window.decorView).single { it.text == "Wiederhergestellten Test aktivieren" }.performClick()
             ShadowAlertDialog.getLatestAlertDialog().getButton(AlertDialog.BUTTON_POSITIVE).performClick()
             shadowOf(Looper.getMainLooper()).idle()
+            awaitUi(activity.get())
             assertTrue(repo.isDeliveryAllowed(oldest.id))
             assertEquals(20, repo.restorePausedCount())
             buttons(activity.get().window.decorView).single { it.text == "Neuere Tests" }.performClick()
+            awaitUi(activity.get())
             assertEquals(20, buttons(activity.get().window.decorView).count { it.text == "Wiederhergestellten Test aktivieren" })
-        } finally { activity.pause().stop().destroy() }
+        } finally { activity.pause().stop().destroy(); awaitUiReadersStopped(activity.get()) }
     }
 }

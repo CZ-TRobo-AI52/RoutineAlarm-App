@@ -17,6 +17,12 @@ class TestAlarmActivity : Activity() {
     private var tokenWasSupplied = false
     private var historyOffset = 0
     private val time = DateTimeFormatter.ofPattern("dd.MM. HH:mm:ss").withZone(ZoneId.systemDefault())
+    private val reader = LatestUiLoader()
+
+    private sealed class ReadResult {
+        data class Active(val occurrence: RoutineOccurrence?) : ReadResult()
+        data class History(val page: TestAlarmHistoryPage) : ReadResult()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -31,6 +37,16 @@ class TestAlarmActivity : Activity() {
         super.onResume()
         TestAlarmRuntime.requestRecovery(this)
         render()
+    }
+
+    override fun onStop() {
+        reader.invalidate()
+        super.onStop()
+    }
+
+    override fun onDestroy() {
+        reader.close()
+        super.onDestroy()
     }
 
     private fun readIntent(value: Intent) {
@@ -65,73 +81,92 @@ class TestAlarmActivity : Activity() {
             setBackgroundColor(Color.rgb(247, 248, 250))
         }
         setContentView(ScrollView(this).apply { addView(root) })
-        try {
-            TestAlarmRuntime.repository(this).use { repo ->
-                val currentToken = token
-                if (currentToken != null) {
-                    val active = TestAlarmRuntime.coordinator(repo).active(currentToken)
-                    root.text(active?.title ?: "Dieser Testwecker ist nicht mehr aktiv", 26f)
-                    if (active != null) {
-                        root.text(active.spokenText)
-                        root.text("Geplant: ${time.format(active.plannedAt)}\n" +
-                            "Ausgelöst: ${time.format(active.lastUpdatedAt)}")
-                        root.button("Erledigt") { act(currentToken, ActionType.DONE) }
-                        root.button("5 Minuten später") { act(currentToken, ActionType.SNOOZE) }
-                        root.button("Überspringen") { act(currentToken, ActionType.SKIP) }
-                    } else root.text("Die gespeicherte Entscheidung bleibt erhalten.")
-                    root.button("Testverlauf öffnen") {
-                        openHistory()
+        val currentToken = token
+        val requestedOffset = historyOffset
+        if (currentToken == null && tokenWasSupplied) {
+            reader.invalidate()
+            root.text("Ungültiger Testwecker", 26f)
+            root.text("Die Alarmidentität fehlt oder wurde verändert.")
+            root.button("Schließen") { finish() }
+            return
+        }
+        root.text(if (currentToken == null) "Testverlauf wird geladen …" else "Testwecker wird geprüft …", 26f)
+        root.button("Schließen") { finish() }
+        val app = applicationContext
+        reader.load({
+            TestAlarmRuntime.repository(app).use { repo ->
+                if (currentToken != null) ReadResult.Active(TestAlarmRuntime.coordinator(repo).active(currentToken))
+                else ReadResult.History(repo.historyPage(requestedOffset))
+            }
+        }) { result ->
+            if (!isFinishing && !isDestroyed) {
+                root.removeAllViews()
+                result.fold(onSuccess = { read ->
+                    when (read) {
+                        is ReadResult.Active -> showActive(root, currentToken!!, read.occurrence)
+                        is ReadResult.History -> showHistory(root, read.page, requestedOffset)
                     }
-                } else if (tokenWasSupplied) {
-                    root.text("Ungültiger Testwecker", 26f)
-                    root.text("Die Alarmidentität fehlt oder wurde verändert.")
-                } else {
-                    root.text("Testverlauf", 26f)
-                    root.text("Testwecker ab Eintrag ${historyOffset + 1}, höchstens 20 je Seite. Sie zählen nicht als persönliche Routinen.")
-                    if (repo.restorePausedCount() > 0) root.text(
-                        "${repo.restorePausedCount()} übernommene Ereignisse sind pausiert. Hier werden Testwecker angezeigt. Gesicherte Planungsrückmeldungen gehören zum früheren Gerät bzw. Datenstand und bestätigen keine aktuelle Planung.")
-                    root.text("Zukünftige Testwecker werden bei App-Rückkehr und nach einem Neustart automatisch wieder eingeplant, sobald genaue Alarme erlaubt sind. Offene und überfällige Tests kannst du hier selbst erneut planen oder öffnen. Vergangene Weckzeiten lösen nur beim manuellen erneuten Planen sofort aus.")
-                    if (!com.cztr.routinealarm.AlarmScheduler.canScheduleExact(this)) {
-                        root.text("Genaue Alarme sind nicht erlaubt. Bitte die Berechtigung in den Systemeinstellungen aktivieren; gespeicherte Tests bleiben erhalten.")
-                    }
-                    val recent = repo.recentTests(historyOffset)
-                    val deliveryEpoch = repo.deliveryEpoch()
-                    if (recent.isEmpty()) root.text("Keine weiteren Testwecker vorhanden.")
-                    recent.forEach { item ->
-                        root.text("${time.format(item.plannedAt)} · ${TestAlarmRuntime.label(item.status)}", 19f)
-                        root.text("Snooze: ${item.snoozeCount} · gesamt ${item.totalSnoozeMinutes} Min.\n" +
-                            "Aktuelle Weckzeit: ${time.format(item.currentTriggerAt)}")
-                        root.text(TestAlarmRuntime.schedulingLabel(repo.schedulingAttempts(item.id, latestOnly = true).firstOrNull(), item))
-                        if (!repo.isDeliveryAllowed(item.id)) {
-                            root.text("Aus Sicherung übernommen · pausiert")
-                            root.button("Wiederhergestellten Test aktivieren") { confirmActivation(item.id) }
-                        } else when (item.status) {
-                            OccurrenceStatus.TRIGGERED -> root.button("Offenen Testwecker öffnen") {
-                                runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
-                                startActivity(TestAlarmRuntime.putToken(Intent(this, javaClass), AlarmDelivery.from(item, deliveryEpoch)))
-                            }
-                            OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED -> root.button("Erneut planen") {
-                                runCatching { TestAlarmRuntime.schedule(this, item) }
-                                    .onSuccess { toast("Testwecker erneut geplant. Vergangene Weckzeiten lösen sofort aus.") }
-                                    .onFailure { showError(it) }
-                            }
-                            else -> Unit
-                        }
-                    }
-                    if (historyOffset > 0) root.button("Neuere Tests") {
-                        historyOffset = (historyOffset - 20).coerceAtLeast(0)
-                        render()
-                    }
-                    if (recent.size == 20) root.button("Ältere Tests") {
-                        historyOffset += 20
-                        render()
-                    }
-                }
+                }, onFailure = {
+                    root.text("Der Testverlauf konnte nicht gelesen werden. Die Daten bleiben erhalten.")
+                    root.button("Erneut versuchen") { render() }
+                })
                 root.button("Schließen") { finish() }
             }
-        } catch (error: Exception) {
-            root.text("Der Testverlauf konnte nicht gelesen werden. Die Daten bleiben erhalten.")
-            root.button("Erneut versuchen") { render() }
+        }
+    }
+
+    private fun showActive(root: LinearLayout, expected: AlarmDelivery, active: RoutineOccurrence?) {
+        root.text(active?.title ?: "Dieser Testwecker ist nicht mehr aktiv", 26f)
+        if (active != null) {
+            root.text(active.spokenText)
+            root.text("Geplant: ${time.format(active.plannedAt)}\n" +
+                "Ausgelöst: ${time.format(active.lastUpdatedAt)}")
+            root.button("Erledigt") { act(expected, ActionType.DONE) }
+            root.button("5 Minuten später") { act(expected, ActionType.SNOOZE) }
+            root.button("Überspringen") { act(expected, ActionType.SKIP) }
+        } else root.text("Die gespeicherte Entscheidung bleibt erhalten.")
+        root.button("Testverlauf öffnen") { openHistory() }
+    }
+
+    private fun showHistory(root: LinearLayout, page: TestAlarmHistoryPage, offset: Int) {
+        root.text("Testverlauf", 26f)
+        root.text("Testwecker ab Eintrag ${offset + 1}, höchstens 20 je Seite. Sie zählen nicht als persönliche Routinen.")
+        if (page.pausedCount > 0) root.text(
+            "${page.pausedCount} übernommene Ereignisse sind pausiert. Hier werden Testwecker angezeigt. Gesicherte Planungsrückmeldungen gehören zum früheren Gerät bzw. Datenstand und bestätigen keine aktuelle Planung.")
+        root.text("Zukünftige Testwecker werden bei App-Rückkehr und nach einem Neustart automatisch wieder eingeplant, sobald genaue Alarme erlaubt sind. Offene und überfällige Tests kannst du hier selbst erneut planen oder öffnen. Vergangene Weckzeiten lösen nur beim manuellen erneuten Planen sofort aus.")
+        if (!com.cztr.routinealarm.AlarmScheduler.canScheduleExact(this)) {
+            root.text("Genaue Alarme sind nicht erlaubt. Bitte die Berechtigung in den Systemeinstellungen aktivieren; gespeicherte Tests bleiben erhalten.")
+        }
+        if (page.items.isEmpty()) root.text("Keine weiteren Testwecker vorhanden.")
+        page.items.forEach { row ->
+            val item = row.occurrence
+            root.text("${time.format(item.plannedAt)} · ${TestAlarmRuntime.label(item.status)}", 19f)
+            root.text("Snooze: ${item.snoozeCount} · gesamt ${item.totalSnoozeMinutes} Min.\n" +
+                "Aktuelle Weckzeit: ${time.format(item.currentTriggerAt)}")
+            root.text(TestAlarmRuntime.schedulingLabel(row.latestSchedulingAttempt, item))
+            if (!row.deliveryAllowed) {
+                root.text("Aus Sicherung übernommen · pausiert")
+                root.button("Wiederhergestellten Test aktivieren") { confirmActivation(item.id) }
+            } else when (item.status) {
+                OccurrenceStatus.TRIGGERED -> root.button("Offenen Testwecker öffnen") {
+                    runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
+                    startActivity(TestAlarmRuntime.putToken(Intent(this, javaClass), AlarmDelivery.from(item, page.deliveryEpoch)))
+                }
+                OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED -> root.button("Erneut planen") {
+                    runCatching { TestAlarmRuntime.schedule(this, item) }
+                        .onSuccess { toast("Testwecker erneut geplant. Vergangene Weckzeiten lösen sofort aus.") }
+                        .onFailure { showError(it) }
+                }
+                else -> Unit
+            }
+        }
+        if (offset > 0) root.button("Neuere Tests") {
+            historyOffset = (offset - 20).coerceAtLeast(0)
+            render()
+        }
+        if (page.items.size == 20) root.button("Ältere Tests") {
+            historyOffset = offset + 20
+            render()
         }
     }
 
