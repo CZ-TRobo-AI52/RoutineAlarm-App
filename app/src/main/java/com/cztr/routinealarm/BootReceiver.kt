@@ -30,7 +30,7 @@ class BootReceiver :
             }
 
         // Test alarms are explicitly requested and independent of the weekly toggle.
-        if (shouldRestore) TestAlarmRuntime.restoreFuture(context)
+        if (shouldRestore) TestAlarmRuntime.requestRecovery(context)
 
         if (
             shouldRestore &&
