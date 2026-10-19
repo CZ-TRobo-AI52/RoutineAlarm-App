@@ -75,7 +75,7 @@ class SchedulingMigrationTest {
             assertEquals(1, it.history("legacy-occ").size)
         }
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use {
-            assertEquals(3, it.version)
+            assertEquals(4, it.version)
             it.rawQuery("SELECT zone_id FROM schedule_revisions WHERE revision_id='legacy'", null).use { row ->
                 assertTrue(row.moveToFirst()); assertEquals("UTC", row.getString(0))
             }
@@ -153,7 +153,7 @@ class SchedulingMigrationTest {
             assertTrue(it.exportBackup().isNotEmpty())
         }
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use {
-            assertEquals(3, it.version)
+            assertEquals(4, it.version)
             it.rawQuery("SELECT count(*) FROM restored_occurrences", null).use { row -> row.moveToFirst(); assertEquals(0, row.getInt(0)) }
         }
     }
@@ -167,6 +167,101 @@ class SchedulingMigrationTest {
             assertEquals(2, it.version)
             it.rawQuery("SELECT count(*) FROM scheduling_receipts", null).use { row -> row.moveToFirst(); assertEquals(1, row.getInt(0)) }
             it.rawQuery("SELECT count(*) FROM sqlite_master WHERE name='store_metadata'", null).use { row -> row.moveToFirst(); assertEquals(0, row.getInt(0)) }
+        }
+    }
+
+    private val savedEpoch = "957c6caf-9a23-449f-8c35-1aa1e048321e"
+
+    /** Restore table definitions copied from published alpha06 commit 057ac243. */
+    private fun legacyV3(): SQLiteDatabase = legacyV2().apply {
+        execSQL("""CREATE TABLE store_metadata (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), delivery_epoch TEXT NOT NULL
+        )""")
+        execSQL("""CREATE TABLE restored_occurrences (
+            occurrence_id TEXT PRIMARY KEY NOT NULL REFERENCES occurrences(occurrence_id)
+        )""")
+        execSQL("INSERT INTO store_metadata(singleton, delivery_epoch) VALUES (1, ?)", arrayOf(savedEpoch))
+        execSQL("INSERT INTO restored_occurrences(occurrence_id) VALUES ('legacy-occ')")
+        version = 3
+    }
+
+    @Test fun genuineV3MigrationPreservesEpochQuarantineHistoryAndSchedulingEvidence() {
+        legacyV3().close()
+        repeat(2) {
+            SqliteOccurrenceRepository(context, Clock.systemUTC(), name).use { repo ->
+                assertEquals(savedEpoch, repo.deliveryEpoch())
+                assertEquals(1, repo.restorePausedCount())
+                assertFalse(repo.isDeliveryAllowed("legacy-occ"))
+                assertEquals(saved(), repo.get("legacy-occ"))
+                val history = repo.history("legacy-occ").single()
+                assertEquals("schedule:legacy-occ", history.actionId)
+                assertEquals("legacy-fixture", history.source)
+                assertEquals(OccurrenceStatus.SCHEDULED, history.resultingStatus)
+                val attempt = repo.schedulingAttempts("legacy-occ").single()
+                assertEquals("keep-attempt", attempt.id)
+                assertEquals(Instant.parse("2026-10-01T11:00:00.123456789Z"), attempt.startedAt)
+                assertEquals(SchedulingOutcome.CALL_RETURNED, attempt.receipt!!.outcome)
+                assertEquals(SchedulingReason.RETURNED, attempt.receipt!!.reason)
+                assertEquals(Instant.parse("2026-10-01T11:00:00.123456999Z"), attempt.receipt!!.recordedAt)
+            }
+        }
+        SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use {
+            assertEquals(4, it.version)
+        }
+    }
+
+    @Test fun alteredV3FailsBeforeMigrationWithoutChangingEpochQuarantineOrEvidence() {
+        legacyV3().use { it.execSQL("ALTER TABLE restored_occurrences ADD COLUMN unexpected TEXT") }
+        assertThrows(IllegalStateException::class.java) {
+            SqliteOccurrenceRepository(context, Clock.systemUTC(), name).use { it.deliveryEpoch() }
+        }
+        SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use {
+            assertEquals(3, it.version)
+            it.rawQuery("SELECT delivery_epoch FROM store_metadata WHERE singleton=1", null).use { row ->
+                assertTrue(row.moveToFirst()); assertEquals(savedEpoch, row.getString(0))
+            }
+            it.rawQuery("SELECT occurrence_id FROM restored_occurrences", null).use { row ->
+                assertTrue(row.moveToFirst()); assertEquals("legacy-occ", row.getString(0)); assertFalse(row.moveToNext())
+            }
+            it.rawQuery("SELECT action_id FROM execution_journal", null).use { row ->
+                assertTrue(row.moveToFirst()); assertEquals("schedule:legacy-occ", row.getString(0))
+            }
+            it.rawQuery("SELECT recorded_at_exact FROM scheduling_receipts WHERE attempt_id='keep-attempt'", null).use { row ->
+                assertTrue(row.moveToFirst()); assertEquals("2026-10-01T11:00:00.123456999Z", row.getString(0))
+            }
+            it.rawQuery("SELECT count(*) FROM sqlite_master WHERE name='scheduling_identity'", null).use { row ->
+                row.moveToFirst(); assertEquals(0, row.getInt(0))
+            }
+        }
+    }
+
+    @Test fun migratedIdentityQueriesUseGenerationRevisionAndSequenceIndex() {
+        legacyV3().close()
+        SqliteOccurrenceRepository(context, Clock.systemUTC(), name).use { it.deliveryEpoch() }
+        SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use { db ->
+            // These are the two correlated identity lookups used by knownTestDeliveries.
+            // Testing the chosen plan catches a regression to occurrence-only scanning.
+            val earlierPlan = db.rawQuery("""EXPLAIN QUERY PLAN SELECT 1 FROM scheduling_attempts earlier
+                WHERE earlier.occurrence_id = ? AND earlier.generation = ? AND earlier.revision = ?
+                AND earlier.sequence < ?""", arrayOf("legacy-occ", "0", "0", "2")).use { row ->
+                buildList { while (row.moveToNext()) add(row.getString(3)) }.joinToString("\n")
+            }
+            val possiblePlan = db.rawQuery("""EXPLAIN QUERY PLAN SELECT 1 FROM scheduling_attempts possible
+                LEFT JOIN scheduling_receipts r ON possible.attempt_id = r.attempt_id
+                WHERE possible.occurrence_id = ? AND possible.generation = ? AND possible.revision = ?
+                AND possible.sequence <= ? AND (r.outcome IS NULL OR r.outcome != 'NOT_CALLED')""",
+                arrayOf("legacy-occ", "0", "0", "2")).use { row ->
+                buildList { while (row.moveToNext()) add(row.getString(3)) }.joinToString("\n")
+            }
+            for (plan in listOf(earlierPlan, possiblePlan)) {
+                assertTrue("Identity lookup must use the composite index: $plan", plan.contains("scheduling_identity"))
+                assertTrue("Generation must constrain the search: $plan", plan.contains("generation=?"))
+                assertTrue("Revision must constrain the search: $plan", plan.contains("revision=?"))
+            }
+            db.rawQuery("SELECT attempt_id FROM scheduling_attempts WHERE occurrence_id=? AND generation=? AND revision=? AND sequence<=?",
+                arrayOf("legacy-occ", "0", "0", "2")).use { row ->
+                assertTrue(row.moveToFirst()); assertEquals("keep-attempt", row.getString(0)); assertFalse(row.moveToNext())
+            }
         }
     }
 }
