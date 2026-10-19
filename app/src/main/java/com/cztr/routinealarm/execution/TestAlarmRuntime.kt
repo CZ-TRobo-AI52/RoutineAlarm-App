@@ -17,6 +17,7 @@ object TestAlarmRuntime {
     private const val ID = "occurrence_id"
     private const val GENERATION = "occurrence_generation"
     private const val REVISION = "occurrence_revision"
+    private const val EPOCH = "occurrence_epoch"
 
     fun repository(context: Context) = SqliteOccurrenceRepository(context, Clock.systemDefaultZone())
     fun coordinator(repo: OccurrenceRepository) = TestAlarmCoordinator(repo, Clock.systemDefaultZone())
@@ -24,16 +25,20 @@ object TestAlarmRuntime {
     fun putToken(intent: Intent, token: AlarmDelivery): Intent = intent.apply {
         data = Uri.Builder().scheme("routinealarm").authority("test-occurrence")
             .appendPath(token.occurrenceId).appendPath(token.generation.toString())
-            .appendPath(token.revision.toString()).build()
+            .appendPath(token.revision.toString()).apply {
+                if (token.epoch.isNotEmpty()) appendQueryParameter("epoch", token.epoch)
+            }.build()
         putExtra(ID, token.occurrenceId)
         putExtra(GENERATION, token.generation)
         putExtra(REVISION, token.revision)
+        putExtra(EPOCH, token.epoch)
     }
 
     fun token(intent: Intent?): AlarmDelivery? {
         if (intent == null || !intent.hasExtra(GENERATION) || !intent.hasExtra(REVISION)) return null
         val token = AlarmDelivery(intent.getStringExtra(ID) ?: return null,
-            intent.getLongExtra(GENERATION, -1), intent.getLongExtra(REVISION, -1))
+            intent.getLongExtra(GENERATION, -1), intent.getLongExtra(REVISION, -1),
+            intent.getStringExtra(EPOCH) ?: "")
         if (!token.valid) return null
         val expected = putToken(Intent(), token).data
         return token.takeIf { intent.data == expected }
@@ -59,7 +64,7 @@ object TestAlarmRuntime {
     fun restoreFuture(context: Context) {
         try {
             repository(context).use { repo ->
-                repo.futureTests(Instant.now()).forEach { occurrence ->
+                repo.futureTests(Instant.now()).filter { repo.isDeliveryAllowed(it.id) }.forEach { occurrence ->
                     try {
                         scheduleCurrent(context, occurrence, repo, futureOnly = true)
                     } catch (error: Exception) {
@@ -78,7 +83,7 @@ object TestAlarmRuntime {
         TestAlarmScheduling(repo, Clock.systemDefaultZone(),
             canSchedule = { AlarmScheduler.canScheduleExact(context) },
             platformSchedule = { current ->
-                val intent = putToken(Intent(context, TestAlarmReceiver::class.java), AlarmDelivery.from(current))
+                val intent = putToken(Intent(context, TestAlarmReceiver::class.java), AlarmDelivery.from(current, repo.deliveryEpoch()))
                 val pending = PendingIntent.getBroadcast(context, 0, intent,
                     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
                 val manager = context.getSystemService(AlarmManager::class.java)
@@ -126,7 +131,7 @@ class TestAlarmReceiver : BroadcastReceiver() {
             val occurrence = TestAlarmRuntime.repository(context).use { TestAlarmRuntime.coordinator(it).trigger(token) }
                 ?: return
             context.startForegroundService(TestAlarmRuntime.putToken(
-                Intent(context, TestAlarmService::class.java), AlarmDelivery.from(occurrence)))
+                Intent(context, TestAlarmService::class.java), AlarmDelivery.from(occurrence, token.epoch)))
         } catch (error: Exception) {
             // Keep journal and current projection for explicit recovery. A failed
             // platform start is not evidence of personal completion or a missed task.
