@@ -7,6 +7,8 @@ import android.app.AlertDialog
 import android.content.Intent
 import android.os.Looper
 import com.cztr.routinealarm.backup.BackupActivity
+import com.cztr.routinealarm.support.awaitUi
+import com.cztr.routinealarm.support.awaitUiReadersStopped
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,13 +30,14 @@ class BackupNavigationTest {
     @Test fun dashboardOpensUserControlledBackupScreen() {
         val activity = Robolectric.buildActivity(MainActivity::class.java).create()
         try {
+            awaitUi(activity.get())
             val button = buttons(activity.get().window.decorView)
                 .firstOrNull { it.text == "Testverlauf sichern / laden" }
             assertNotNull("Backup must be reachable from the existing dashboard", button)
             button!!.performClick()
             assertEquals("com.cztr.routinealarm.backup.BackupActivity",
                 shadowOf(activity.get()).nextStartedActivity.component!!.className)
-        } finally { activity.destroy() }
+        } finally { activity.destroy(); awaitUiReadersStopped(activity.get()) }
     }
 
     @Test fun exportUsesDocumentPickerWithoutBroadStorageAccess() {

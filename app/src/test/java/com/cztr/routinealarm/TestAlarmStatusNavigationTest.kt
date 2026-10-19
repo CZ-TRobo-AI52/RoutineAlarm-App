@@ -10,6 +10,8 @@ import android.widget.TextView
 import com.cztr.routinealarm.execution.TestAlarmActivity
 import com.cztr.routinealarm.execution.TestAlarmRuntime
 import com.cztr.routinealarm.occurrence.SqliteOccurrenceRepository
+import com.cztr.routinealarm.support.awaitUi
+import com.cztr.routinealarm.support.awaitUiReadersStopped
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -88,8 +90,8 @@ class TestAlarmStatusNavigationTest {
 
     private fun withMain(check: (MainActivity) -> Unit) {
         val controller = Robolectric.buildActivity(MainActivity::class.java).setup()
-        try { check(controller.get()) }
-        finally { controller.pause().stop().destroy() }
+        try { awaitUi(controller.get()); check(controller.get()) }
+        finally { controller.pause().stop().destroy(); awaitUiReadersStopped(controller.get()) }
     }
 
     private fun text(activity: MainActivity, label: String): TextView =
