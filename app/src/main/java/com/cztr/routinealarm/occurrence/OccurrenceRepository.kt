@@ -12,6 +12,7 @@ import java.time.Clock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
+import java.util.UUID
 
 interface OccurrenceRepository : Closeable {
     fun materialize(items: List<RoutineOccurrence>): Int
@@ -177,6 +178,63 @@ class SqliteOccurrenceRepository(
         ))
     } }
 
+    /** A successful return means the attempt commit completed before any platform effect. */
+    fun beginSchedulingAttempt(expected: RoutineOccurrence, futureOnly: Boolean): SchedulingAttempt? = transaction { db ->
+        val current = get(db, expected.id)
+        check(current == expected && current.isTest && current.status in
+            setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED)) { "Dieser Testwecker wurde bereits geändert." }
+        val triggerMillis = expected.currentTriggerAt.toEpochMilli()
+        val now = clock.instant()
+        val nowMillis = now.toEpochMilli()
+        if (futureOnly && triggerMillis <= nowMillis) return@transaction null
+        val attempt = SchedulingAttempt(UUID.randomUUID().toString(), expected.id, expected.revision,
+            expected.generation, Instant.ofEpochMilli(triggerMillis), now)
+        db.insertOrThrow("scheduling_attempts", null, ContentValues().apply {
+            put("attempt_id", attempt.id); put("occurrence_id", attempt.occurrenceId)
+            put("revision", attempt.revision); put("generation", attempt.generation)
+            put("trigger_at", triggerMillis); put("started_at_exact", now.toString())
+        })
+        attempt
+    }
+
+    /** Idempotent receipt replay cannot rewrite an existing observation. */
+    fun recordSchedulingReceipt(attemptId: String, outcome: SchedulingOutcome,
+        reason: SchedulingReason): SchedulingReceipt = transaction { db ->
+        require(when (outcome) {
+            SchedulingOutcome.CALL_RETURNED -> reason == SchedulingReason.RETURNED
+            SchedulingOutcome.CALL_FAILED -> reason in setOf(SchedulingReason.PLATFORM_EXCEPTION, SchedulingReason.PERMISSION_DENIED)
+            SchedulingOutcome.NOT_CALLED -> reason in setOf(SchedulingReason.PERMISSION_DENIED, SchedulingReason.STALE, SchedulingReason.EXPIRED)
+        }) { "Inconsistent scheduling receipt" }
+        db.query("scheduling_receipts", null, "attempt_id = ?", arrayOf(attemptId), null, null, null).use {
+            if (it.moveToFirst()) {
+                val previous = receipt(it)
+                check(previous.outcome == outcome && previous.reason == reason) { "Scheduling receipt cannot be rewritten" }
+                return@transaction previous
+            }
+        }
+        val value = SchedulingReceipt(outcome, reason, clock.instant())
+        value.recordedAt.toEpochMilli()
+        db.insertOrThrow("scheduling_receipts", null, ContentValues().apply {
+            put("attempt_id", attemptId); put("outcome", outcome.name); put("reason", reason.name)
+            put("recorded_at_exact", value.recordedAt.toString())
+        })
+        value
+    }
+
+    fun schedulingAttempts(occurrenceId: String, latestOnly: Boolean = false): List<SchedulingAttempt> =
+        helper.readableDatabase.rawQuery("""SELECT a.*, r.outcome, r.reason, r.recorded_at_exact
+            FROM scheduling_attempts a LEFT JOIN scheduling_receipts r ON a.attempt_id = r.attempt_id
+            WHERE a.occurrence_id = ? ORDER BY a.sequence ${if (latestOnly) "DESC LIMIT 1" else "ASC"}""",
+            arrayOf(occurrenceId)).use { cursor -> buildList {
+            while (cursor.moveToNext()) add(SchedulingAttempt(
+                cursor.string("attempt_id"), cursor.string("occurrence_id"), cursor.long("revision"), cursor.long("generation"),
+                Instant.ofEpochMilli(cursor.long("trigger_at")), Instant.parse(cursor.string("started_at_exact")),
+                if (cursor.nullableString("outcome") == null) null else receipt(cursor)))
+        } }
+
+    private fun receipt(cursor: Cursor) = SchedulingReceipt(SchedulingOutcome.valueOf(cursor.string("outcome")),
+        SchedulingReason.valueOf(cursor.string("reason")), Instant.parse(cursor.string("recorded_at_exact")))
+
     override fun close() = helper.close()
 
     private fun <T> transaction(block: (SQLiteDatabase) -> T): T {
@@ -279,9 +337,9 @@ class SqliteOccurrenceRepository(
     }
 }
 
-/** Schema 1 is additive to v0.2, which has no occurrence database; preferences remain untouched. */
+/** Schema 2 adds scheduling observations; the occurrence projection and execution journal remain unchanged. */
 private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHelper(
-    context, name, null, 1,
+    context, name, null, 2,
     DatabaseErrorHandler { throw SQLiteException("Occurrence database is corrupt; original file retained") },
 ) {
     override fun onConfigure(db: SQLiteDatabase) {
@@ -297,7 +355,11 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        error("Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted")
+        check(oldVersion == 1 && newVersion == 2) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
+        // SQLiteOpenHelper wraps onUpgrade and its version change in one transaction.
+        validate(db, V1_SCHEMA)
+        SCHEDULING_SCHEMA.values.forEach(db::execSQL)
+        validate(db, SCHEMA)
     }
 
     override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
@@ -306,11 +368,15 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
+        validate(db, SCHEMA)
+    }
+
+    private fun validate(db: SQLiteDatabase, expected: Map<String, String>) {
         val found = mutableMapOf<String, String>()
         db.rawQuery("SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name != 'android_metadata'", null).use {
             while (it.moveToNext()) found[it.getString(0)] = normalize(it.getString(1))
         }
-        check(found == SCHEMA.mapValues { normalize(it.value) }) { "Unsupported or damaged occurrence database schema; no reset performed" }
+        check(found == expected.mapValues { normalize(it.value) }) { "Unsupported or damaged occurrence database schema; no reset performed" }
         db.rawQuery("PRAGMA quick_check", null).use {
             check(it.moveToFirst() && it.getString(0) == "ok" && !it.moveToNext()) { "Occurrence database integrity check failed" }
         }
@@ -322,7 +388,7 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
     private fun normalize(sql: String): String = sql.trim().replace(Regex("\\s+"), " ")
 
     companion object {
-        private val SCHEMA = linkedMapOf(
+        private val V1_SCHEMA = linkedMapOf(
             "schedule_revisions" to """CREATE TABLE schedule_revisions (
                 revision_id TEXT PRIMARY KEY NOT NULL, zone_id TEXT NOT NULL, created_at INTEGER NOT NULL,
                 UNIQUE(revision_id, zone_id)
@@ -361,6 +427,30 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
             "journal_no_delete" to """CREATE TRIGGER journal_no_delete BEFORE DELETE ON execution_journal
                 BEGIN SELECT RAISE(ABORT, 'Execution journal is append-only'); END""",
         )
+        private val SCHEDULING_SCHEMA = linkedMapOf(
+            "scheduling_attempts" to """CREATE TABLE scheduling_attempts (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT, attempt_id TEXT NOT NULL UNIQUE,
+                occurrence_id TEXT NOT NULL REFERENCES occurrences(occurrence_id),
+                revision INTEGER NOT NULL CHECK(revision >= 0), generation INTEGER NOT NULL CHECK(generation >= 0),
+                trigger_at INTEGER NOT NULL, started_at_exact TEXT NOT NULL
+            )""",
+            "scheduling_receipts" to """CREATE TABLE scheduling_receipts (
+                attempt_id TEXT PRIMARY KEY NOT NULL REFERENCES scheduling_attempts(attempt_id),
+                outcome TEXT NOT NULL CHECK(outcome IN ('CALL_RETURNED','CALL_FAILED','NOT_CALLED')),
+                reason TEXT NOT NULL CHECK(reason IN ('RETURNED','PLATFORM_EXCEPTION','PERMISSION_DENIED','STALE','EXPIRED')),
+                recorded_at_exact TEXT NOT NULL
+            )""",
+            "scheduling_occurrence" to "CREATE INDEX scheduling_occurrence ON scheduling_attempts(occurrence_id, sequence)",
+            "attempts_no_update" to """CREATE TRIGGER attempts_no_update BEFORE UPDATE ON scheduling_attempts
+                BEGIN SELECT RAISE(ABORT, 'Scheduling attempts are append-only'); END""",
+            "attempts_no_delete" to """CREATE TRIGGER attempts_no_delete BEFORE DELETE ON scheduling_attempts
+                BEGIN SELECT RAISE(ABORT, 'Scheduling attempts are append-only'); END""",
+            "receipts_no_update" to """CREATE TRIGGER receipts_no_update BEFORE UPDATE ON scheduling_receipts
+                BEGIN SELECT RAISE(ABORT, 'Scheduling receipts are append-only'); END""",
+            "receipts_no_delete" to """CREATE TRIGGER receipts_no_delete BEFORE DELETE ON scheduling_receipts
+                BEGIN SELECT RAISE(ABORT, 'Scheduling receipts are append-only'); END""",
+        )
+        private val SCHEMA = V1_SCHEMA + SCHEDULING_SCHEMA
     }
 }
 
