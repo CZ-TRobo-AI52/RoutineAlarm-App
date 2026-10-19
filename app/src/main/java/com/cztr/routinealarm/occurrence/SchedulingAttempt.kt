@@ -68,7 +68,8 @@ class TestAlarmScheduling(
         /** Also called by the Android adapter after PendingIntent preparation. */
         fun requireCurrentBeforeCall(repository: SqliteOccurrenceRepository, occurrence: RoutineOccurrence,
             clock: Clock, futureOnly: Boolean) {
-            if (repository.get(occurrence.id) != occurrence) throw SchedulingNotCalled(SchedulingReason.STALE)
+            if (!repository.isDeliveryAllowed(occurrence.id) || repository.get(occurrence.id) != occurrence)
+                throw SchedulingNotCalled(SchedulingReason.STALE)
             if (futureOnly && occurrence.currentTriggerAt.toEpochMilli() <= clock.millis())
                 throw SchedulingNotCalled(SchedulingReason.EXPIRED)
         }
