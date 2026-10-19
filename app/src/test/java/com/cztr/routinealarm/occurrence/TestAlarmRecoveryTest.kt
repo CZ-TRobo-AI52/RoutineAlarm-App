@@ -26,7 +26,7 @@ import java.time.Clock
 import java.time.Duration
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [31])
+@Config(sdk = [31], shadows = [RecoveryJobSchedulerShadow::class, RecoveryJobParametersShadow::class])
 @LooperMode(LooperMode.Mode.PAUSED)
 @SQLiteMode(SQLiteMode.Mode.NATIVE)
 class TestAlarmRecoveryTest {
@@ -41,9 +41,15 @@ class TestAlarmRecoveryTest {
         manager = context.getSystemService(AlarmManager::class.java)
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         ScheduleState.setEnabled(context, false)
+        context.getSystemService(android.app.job.JobScheduler::class.java).cancelAll()
     }
 
-    @After fun cleanup() { repo.close(); context.deleteDatabase("occurrences.db") }
+    @After fun cleanup() {
+        awaitRecoveryWorker()
+        context.getSystemService(android.app.job.JobScheduler::class.java).cancelAll()
+        repo.close()
+        context.deleteDatabase("occurrences.db")
+    }
 
     private fun create(offsetMinutes: Long = 0) = TestAlarmCoordinator(repo,
         Clock.offset(Clock.systemDefaultZone(), Duration.ofMinutes(offsetMinutes))).create(1)
@@ -56,11 +62,16 @@ class TestAlarmRecoveryTest {
         TestAlarmRuntime.token(shadowOf(it.operation).savedIntent)
     }
 
+    private fun recover() {
+        assertTrue(TestAlarmRuntime.requestRecovery(context))
+        runQueuedRecovery(context)
+    }
+
     @Test fun restoresPersistedFutureAfterRepositoryReopenWithoutNewJournalEntries() {
         val item = create()
         repo.close()
-        TestAlarmRuntime.restoreFuture(context)
-        TestAlarmRuntime.restoreFuture(context)
+        recover()
+        recover()
         assertEquals(listOf(AlarmDelivery.from(item)), tokens())
         assertEquals(item.currentTriggerAt.toEpochMilli(), shadowOf(manager).scheduledAlarms.single().triggerAtTime)
         TestAlarmRuntime.repository(context).use {
@@ -78,6 +89,8 @@ class TestAlarmRecoveryTest {
             AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED).forEach { action ->
             cancelPlatformAlarms()
             BootReceiver().onReceive(context, Intent(action))
+            assertTrue("Broadcast must only enqueue", tokens().isEmpty())
+            runQueuedRecovery(context)
             assertEquals(action, listOf(AlarmDelivery.from(item)), tokens())
             assertFalse(ScheduleState.isEnabled(context))
         }
@@ -87,12 +100,13 @@ class TestAlarmRecoveryTest {
         val item = create()
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
         BootReceiver().onReceive(context, Intent(Intent.ACTION_BOOT_COMPLETED))
-        TestAlarmRuntime.restoreFuture(context)
+        runQueuedRecovery(context)
         assertTrue(tokens().isEmpty())
         assertEquals(item, repo.get(item.id))
         assertTrue(repo.schedulingAttempts(item.id).all { it.receipt?.outcome == SchedulingOutcome.NOT_CALLED })
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         BootReceiver().onReceive(context, Intent(AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED))
+        runQueuedRecovery(context)
         assertEquals(listOf(AlarmDelivery.from(item)), tokens())
         assertEquals(1, repo.history(item.id).size)
     }
@@ -100,11 +114,19 @@ class TestAlarmRecoveryTest {
     @Test fun mainResumeAndHistoryResumeRestoreAfterPlatformClearsAlarms() {
         val item = create()
         val main = Robolectric.buildActivity(MainActivity::class.java).setup()
-        try { assertEquals(listOf(AlarmDelivery.from(item)), tokens()) }
+        try {
+            assertTrue(tokens().isEmpty())
+            runQueuedRecovery(context)
+            assertEquals(listOf(AlarmDelivery.from(item)), tokens())
+        }
         finally { main.pause().stop().destroy() }
         cancelPlatformAlarms()
         val history = Robolectric.buildActivity(TestAlarmActivity::class.java).setup()
-        try { assertEquals(listOf(AlarmDelivery.from(item)), tokens()) }
+        try {
+            assertTrue(tokens().isEmpty())
+            runQueuedRecovery(context)
+            assertEquals(listOf(AlarmDelivery.from(item)), tokens())
+        }
         finally { history.pause().stop().destroy() }
     }
 
@@ -112,7 +134,7 @@ class TestAlarmRecoveryTest {
         val overdue = create(-3)
         val triggered = TestAlarmRuntime.coordinator(repo).trigger(AlarmDelivery.from(create(-2)))!!
         val journals = listOf(overdue, triggered).associate { it.id to repo.history(it.id) }
-        TestAlarmRuntime.restoreFuture(context)
+        recover()
         assertTrue(tokens().isEmpty())
         journals.forEach { (id, history) -> assertEquals(history, repo.history(id)) }
         assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
@@ -133,7 +155,7 @@ class TestAlarmRecoveryTest {
         val coordinator = TestAlarmRuntime.coordinator(repo)
         val triggered = coordinator.trigger(AlarmDelivery.from(original))!!
         val snoozed = coordinator.act(AlarmDelivery.from(triggered), ActionType.SNOOZE, 5)!!.occurrence
-        TestAlarmRuntime.restoreFuture(context)
+        recover()
         assertEquals(listOf(AlarmDelivery.from(snoozed)), tokens())
         val journal = repo.history(original.id)
         TestAlarmReceiver().onReceive(context, TestAlarmRuntime.putToken(
@@ -152,14 +174,14 @@ class TestAlarmRecoveryTest {
         val future = create()
         val personal = future.copy(id = "personal", eventId = "personal", isTest = false)
         repo.materialize(listOf(personal))
-        TestAlarmRuntime.restoreFuture(context)
+        recover()
         assertEquals(listOf(AlarmDelivery.from(future)), tokens())
         assertEquals(personal, repo.get(personal.id))
     }
 
     @Test fun futureRecoveryIsNotLimitedToTwentyVisibleHistoryEntries() {
         val futures = (1..25).map { create(it.toLong()) }
-        TestAlarmRuntime.restoreFuture(context)
+        recover()
         assertEquals(futures.map { AlarmDelivery.from(it) }.toSet(), tokens().toSet())
         assertEquals(25, tokens().size)
         cancelPlatformAlarms()

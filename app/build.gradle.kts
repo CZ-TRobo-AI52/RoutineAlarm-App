@@ -11,8 +11,8 @@ android {
         applicationId = "com.cztr.routinealarm"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.2.0-alpha07"
+        versionCode = 10
+        versionName = "0.2.0-alpha08"
     }
 
     signingConfigs {

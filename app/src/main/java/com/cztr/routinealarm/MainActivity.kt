@@ -49,7 +49,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
 
-        com.cztr.routinealarm.execution.TestAlarmRuntime.restoreFuture(this)
+        com.cztr.routinealarm.execution.TestAlarmRuntime.requestRecovery(this)
 
         if (
             ScheduleState.isEnabled(this) &&

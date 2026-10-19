@@ -38,6 +38,8 @@ enthält diese Fortsetzung noch nicht; seinen manuellen Wiederaufnahmeweg
 beschreibt der [M2.2a-Testbericht](M2.2-test-journal.md).
 
 Die APK ist eine Testversion. Ein erfolgreicher Build ersetzt keinen Handytest.
+Seit [alpha08](ALPHA08.md) erfolgt automatische Testwecker-Recovery im Hintergrund
+mit gespeichertem Fortschritt. Android bestimmt den Startzeitpunkt dieser Arbeit.
 Seit [alpha06](ALPHA06.md) kann der Testverlauf als Datei gesichert und in eine
 leere Testinstallation übernommen werden. Übernommene offene Tests bleiben bis
 zur einzelnen Bestätigung pausiert. Die Datei ist unverschlüsselt; Wochenplan-
