@@ -214,11 +214,23 @@ class SqliteOccurrenceRepository(
      * are handled by their immediate action or a new recovery cycle, never by list offsets.
      */
     fun futureTestsPage(after: Instant, afterTriggerMillis: Long? = null, afterId: String? = null,
-        limit: Int = 64): List<RoutineOccurrence> {
+        limit: Int = 64): List<RoutineOccurrence> =
+        futureOccurrencesPage(OccurrenceScope.Tests, after, afterTriggerMillis, afterId, limit)
+
+    fun futureOccurrencesPage(scope: OccurrenceScope, after: Instant, afterTriggerMillis: Long? = null,
+        afterId: String? = null, limit: Int = 64): List<RoutineOccurrence> {
         require(limit in 1..64)
         require((afterTriggerMillis == null) == (afterId == null))
-        val args = mutableListOf("SCHEDULED", "SNOOZED", after.toEpochMilli().toString())
-        var selection = "is_test = 1 AND status IN (?, ?) AND current_trigger_at > ? " +
+        val args = mutableListOf<String>()
+        val scopeSelection = when (scope) {
+            OccurrenceScope.Tests -> "is_test = 1"
+            is OccurrenceScope.PersonalEvent -> {
+                args.add(scope.eventId)
+                "is_test = 0 AND event_id = ?"
+            }
+        }
+        args.addAll(listOf("SCHEDULED", "SNOOZED", after.toEpochMilli().toString()))
+        var selection = "$scopeSelection AND status IN (?, ?) AND current_trigger_at > ? " +
             "AND NOT EXISTS (SELECT 1 FROM restored_occurrences r WHERE r.occurrence_id = occurrences.occurrence_id)"
         if (afterTriggerMillis != null) {
             selection += " AND (current_trigger_at > ? OR (current_trigger_at = ? AND occurrence_id > ?))"
@@ -310,11 +322,15 @@ class SqliteOccurrenceRepository(
     } }
 
     /** A successful return means the attempt commit completed before any platform effect. */
-    fun beginSchedulingAttempt(expected: RoutineOccurrence, futureOnly: Boolean): SchedulingAttempt? = transaction { db ->
-        check(deliveryAllowed(db, expected.id)) { "Dieser wiederhergestellte Testwecker muss zuerst ausdrücklich aktiviert werden." }
+    fun beginSchedulingAttempt(expected: RoutineOccurrence, futureOnly: Boolean): SchedulingAttempt? =
+        beginSchedulingAttempt(expected, futureOnly, OccurrenceScope.Tests)
+
+    fun beginSchedulingAttempt(expected: RoutineOccurrence, futureOnly: Boolean,
+        scope: OccurrenceScope): SchedulingAttempt? = transaction { db ->
+        check(deliveryAllowed(db, expected.id)) { "Dieses wiederhergestellte Ereignis muss zuerst ausdrücklich aktiviert werden." }
         val current = get(db, expected.id)
-        check(current == expected && current.isTest && current.status in
-            setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED)) { "Dieser Testwecker wurde bereits geändert." }
+        check(current == expected && scope.accepts(current) && current.status in
+            setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED)) { "Dieses Ereignis wurde geändert oder gehört nicht zum ausgewählten Bereich." }
         val triggerMillis = expected.currentTriggerAt.toEpochMilli()
         val now = clock.instant()
         val nowMillis = now.toEpochMilli()
@@ -373,16 +389,28 @@ class SqliteOccurrenceRepository(
      * Existing sequence/occurrence indexes avoid regrouping the entire history per page.
      * Attempts lack epoch provenance; only current local identities are reconstructed.
      */
-    fun knownTestDeliveries(through: Long, after: Long, occurrenceId: String? = null): List<KnownTestDelivery> {
+    fun knownTestDeliveries(through: Long, after: Long, occurrenceId: String? = null): List<KnownTestDelivery> =
+        knownDeliveries(OccurrenceScope.Tests, through, after, occurrenceId)
+
+    fun knownDeliveries(scope: OccurrenceScope, through: Long, after: Long,
+        occurrenceId: String? = null): List<KnownOccurrenceDelivery> {
         require(through >= 0 && after >= 0)
         val epoch = deliveryEpoch()
-        val args = mutableListOf(after.toString(), through.toString())
+        val args = mutableListOf<String>()
+        val scopeSelection = when (scope) {
+            OccurrenceScope.Tests -> "o.is_test = 1"
+            is OccurrenceScope.PersonalEvent -> {
+                args.add(scope.eventId)
+                "o.is_test = 0 AND o.event_id = ?"
+            }
+        }
+        args.addAll(listOf(after.toString(), through.toString()))
         if (occurrenceId != null) args.add(occurrenceId)
         args.add(through.toString())
         return helper.readableDatabase.rawQuery("""SELECT a.sequence AS first_sequence,
             a.occurrence_id, a.generation, a.revision
             FROM scheduling_attempts a JOIN occurrences o ON a.occurrence_id = o.occurrence_id
-            WHERE o.is_test = 1 AND a.sequence > ? AND a.sequence <= ?
+            WHERE $scopeSelection AND a.sequence > ? AND a.sequence <= ?
             ${if (occurrenceId == null) "" else "AND a.occurrence_id = ?"}
             AND NOT EXISTS (SELECT 1 FROM scheduling_attempts earlier
                 WHERE earlier.occurrence_id = a.occurrence_id AND earlier.generation = a.generation
@@ -393,7 +421,7 @@ class SqliteOccurrenceRepository(
                 AND possible.revision = a.revision AND possible.sequence <= ?
                 AND (r.outcome IS NULL OR r.outcome != 'NOT_CALLED'))
             ORDER BY a.sequence ASC LIMIT 64""", args.toTypedArray()).use { cursor -> buildList {
-                while (cursor.moveToNext()) add(KnownTestDelivery(cursor.long("first_sequence"),
+                while (cursor.moveToNext()) add(KnownOccurrenceDelivery(cursor.long("first_sequence"),
                     AlarmDelivery(cursor.string("occurrence_id"), cursor.long("generation"), cursor.long("revision"), epoch)))
             } }
     }

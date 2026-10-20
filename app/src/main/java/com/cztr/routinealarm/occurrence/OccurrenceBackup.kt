@@ -218,7 +218,9 @@ internal object OccurrenceBackup {
             require(row.number("sequence") > lastSequence); lastSequence = row.number("sequence")
             require(row.text("attempt_id").isNotBlank())
             val current = historical[row.text("occurrence_id") to row.number("revision")]
-            require(current != null && current.isTest && current.status in setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED) &&
+            // Attempts bind to their journal-proven historical state, not today's rule registry
+            // or the current projection. An imported receipt never grants delivery permission.
+            require(current != null && current.status in setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED) &&
                 current.generation == row.number("generation") && current.currentTriggerAt.toEpochMilli() == row.number("trigger_at"))
             Instant.parse(row.text("started_at_exact")).toEpochMilli()
         }
