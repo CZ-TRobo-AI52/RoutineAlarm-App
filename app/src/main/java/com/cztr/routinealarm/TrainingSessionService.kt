@@ -19,6 +19,7 @@ import java.time.DayOfWeek
 import java.time.Duration
 import java.time.ZonedDateTime
 import java.util.Locale
+import java.util.UUID
 
 class TrainingSessionService :
     Service(),
@@ -88,7 +89,12 @@ class TrainingSessionService :
         List<RoutineEvent> =
         emptyList()
 
-    private var lastScheduledEventId:
+    private var sessionId:
+        String? = null
+
+    private var destroyed = false
+
+    private var lastScheduledUtteranceId:
         String? = null
 
     private var wakeLock:
@@ -135,6 +141,11 @@ class TrainingSessionService :
             return START_NOT_STICKY
         }
 
+        handler.removeCallbacksAndMessages(null)
+        tts?.stop()
+        sessionId = UUID.randomUUID().toString()
+        lastScheduledUtteranceId = null
+
         sessionDay =
             runCatching {
                 DayOfWeek.valueOf(
@@ -164,7 +175,9 @@ class TrainingSessionService :
             )
         )
 
-        if (ttsReady) {
+        if (sessionEvents.isEmpty()) {
+            stopSession()
+        } else if (ttsReady) {
             scheduleCues()
         }
 
@@ -174,6 +187,8 @@ class TrainingSessionService :
     override fun onInit(
         status: Int
     ) {
+        if (destroyed) return
+
         if (
             status !=
             TextToSpeech.SUCCESS
@@ -207,15 +222,11 @@ class TrainingSessionService :
                 override fun onDone(
                     utteranceId: String?
                 ) {
-                    val last =
-                        lastScheduledEventId
-
-                    if (
-                        last != null &&
-                        utteranceId ==
-                        "training:$last"
-                    ) {
-                        handler.post {
+                    // TTS callbacks can arrive after stop or after another start.
+                    // Check the current session on the main thread, when acted on.
+                    handler.post {
+                        if (sessionId != null && utteranceId != null &&
+                            utteranceId == lastScheduledUtteranceId) {
                             stopSession()
                         }
                     }
@@ -238,13 +249,14 @@ class TrainingSessionService :
         ttsReady = true
 
         if (
-            sessionEvents.isNotEmpty()
+            sessionId != null
         ) {
             scheduleCues()
         }
     }
 
     private fun scheduleCues() {
+        val scheduledSession = sessionId ?: return
         handler.removeCallbacksAndMessages(
             null
         )
@@ -294,10 +306,7 @@ class TrainingSessionService :
             return
         }
 
-        lastScheduledEventId =
-            pending.last()
-                .first
-                .id
+        lastScheduledUtteranceId = utteranceId(scheduledSession, pending.last().first)
 
         pending.forEach {
             (event, delay) ->
@@ -305,7 +314,8 @@ class TrainingSessionService :
             handler.postDelayed(
                 {
                     announce(
-                        event
+                        event,
+                        scheduledSession
                     )
                 },
                 delay
@@ -319,7 +329,7 @@ class TrainingSessionService :
 
         handler.postDelayed(
             {
-                stopSession()
+                if (sessionId == scheduledSession) stopSession()
             },
             finalDelay +
                 90_000L
@@ -327,8 +337,10 @@ class TrainingSessionService :
     }
 
     private fun announce(
-        event: RoutineEvent
+        event: RoutineEvent,
+        scheduledSession: String
     ) {
+        if (sessionId != scheduledSession || destroyed) return
         val manager =
             getSystemService(
                 NotificationManager::class.java
@@ -345,9 +357,12 @@ class TrainingSessionService :
             event.spokenText,
             TextToSpeech.QUEUE_FLUSH,
             null,
-            "training:${event.id}"
+            utteranceId(scheduledSession, event)
         )
     }
+
+    private fun utteranceId(session: String, event: RoutineEvent) =
+        "training:$session:${event.id}"
 
     private fun startForegroundCompat(
         notification: Notification
@@ -443,6 +458,9 @@ class TrainingSessionService :
     }
 
     private fun stopSession() {
+        sessionId = null
+        sessionEvents = emptyList()
+        lastScheduledUtteranceId = null
         handler.removeCallbacksAndMessages(
             null
         )
@@ -457,6 +475,10 @@ class TrainingSessionService :
     }
 
     override fun onDestroy() {
+        destroyed = true
+        sessionId = null
+        sessionEvents = emptyList()
+        lastScheduledUtteranceId = null
         handler.removeCallbacksAndMessages(
             null
         )

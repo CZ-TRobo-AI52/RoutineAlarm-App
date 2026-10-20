@@ -4,10 +4,13 @@ Diese vorläufige Debug-App heißt **RoutineAlarm Test** und verwendet
 `com.cztr.routinealarm.dev`. Sie lässt sich neben der bisherigen Release-App
 installieren. Android 8.0 oder neuer ist erforderlich.
 
-Aktueller Entwicklungsstand: `0.2.0-alpha09-test`, Versionscode 11. Die
+Aktueller Entwicklungsstand: `0.2.0-alpha10-test`, Versionscode 12.
+[Alpha10](ALPHA10.md#handyprüfung) ergänzt die Prüfung des Trainingsabbruchs.
+Für Alpha10 liegt noch kein Realgerätetest vor. Die
 [zusätzliche Alpha09-Prüfung](ALPHA09-RESPONSIVE-HISTORY.md#handyprüfung) behandelt
 Statuskarte, Verlaufseiten, Navigation während des Ladens und Rückkehr aus dem
-Hintergrund. Dafür wurde noch kein Realgerätetest durchgeführt.
+Hintergrund. Für Alpha09 bestätigt der Nutzer die erfragten Tests auf Seeker /
+Android 16; unabhängige Rohlogs liegen nicht vor.
 
 ## Installation und kurzer Test
 

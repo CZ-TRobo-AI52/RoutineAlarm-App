@@ -18,6 +18,8 @@ data class AlarmDelivery(val occurrenceId: String, val generation: Long, val rev
 
 /** M2.2a: existing journal, limited to explicit test alarms until weekly recovery is ready. */
 class TestAlarmCoordinator(private val repository: OccurrenceRepository, private val clock: Clock) {
+    private val deliveryGate = OccurrenceDeliveryGate(repository) { it.isTest }
+
     fun create(minutes: Int): RoutineOccurrence {
         require(minutes in 1..60)
         val now = Instant.ofEpochMilli(clock.millis())
@@ -37,38 +39,24 @@ class TestAlarmCoordinator(private val repository: OccurrenceRepository, private
     }
 
     fun trigger(delivery: AlarmDelivery): RoutineOccurrence? {
-        if (!allowed(delivery)) return null
-        val current = repository.get(delivery.occurrenceId)?.takeIf { it.isTest } ?: return null
-        if (current.generation != delivery.generation) return null
+        val current = deliveryGate.triggerCandidate(delivery, clock.instant()) ?: return null
         // A redelivery reads current state, not an old ActionResult snapshot. Do not
         // reuse an action ID with a new observation timestamp on retry.
-        if (current.status == OccurrenceStatus.TRIGGERED) {
-            return current.takeIf { delivery.revision < Long.MAX_VALUE && it.revision == delivery.revision + 1 }
-        }
-        if (current.revision != delivery.revision ||
-            current.status !in setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED) ||
-            clock.instant() < current.currentTriggerAt) return null
+        if (current.status == OccurrenceStatus.TRIGGERED) return current
         repository.apply(ExecutionAction(
             id = "test-trigger:${UUID.randomUUID()}", occurrenceId = current.id,
             type = ActionType.TRIGGER, actor = Actor.SYSTEM, occurredAt = clock.instant(),
             expectedRevision = delivery.revision, expectedGeneration = delivery.generation,
             source = "test-alarm-receiver",
         ))
-        return repository.get(current.id)?.takeIf {
-            it.isTest && it.status == OccurrenceStatus.TRIGGERED && it.generation == delivery.generation &&
-                delivery.revision < Long.MAX_VALUE && it.revision == delivery.revision + 1
-        }
+        return deliveryGate.triggeredResult(delivery)
     }
 
-    fun active(token: AlarmDelivery): RoutineOccurrence? =
-        if (!allowed(token)) null else repository.get(token.occurrenceId)?.takeIf {
-            it.isTest && it.status == OccurrenceStatus.TRIGGERED &&
-                it.generation == token.generation && it.revision == token.revision
-        }
+    fun active(token: AlarmDelivery): RoutineOccurrence? = deliveryGate.active(token)
 
     fun act(token: AlarmDelivery, type: ActionType, minutes: Int? = null): ActionResult? {
         require(type in setOf(ActionType.DONE, ActionType.SKIP, ActionType.SNOOZE))
-        if (!allowed(token) || repository.get(token.occurrenceId)?.isTest != true) return null
+        if (deliveryGate.actionTarget(token) == null) return null
         return repository.apply(ExecutionAction(
             id = "test-user:${UUID.randomUUID()}", occurrenceId = token.occurrenceId,
             type = type, actor = Actor.USER, occurredAt = clock.instant(),
@@ -76,7 +64,4 @@ class TestAlarmCoordinator(private val repository: OccurrenceRepository, private
             snoozeMinutes = minutes, source = "test-alarm-screen",
         ))
     }
-
-    private fun allowed(token: AlarmDelivery) = token.valid &&
-        token.epoch == repository.deliveryEpoch() && repository.isDeliveryAllowed(token.occurrenceId)
 }
