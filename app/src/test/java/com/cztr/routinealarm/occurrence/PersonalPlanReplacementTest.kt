@@ -127,7 +127,8 @@ class PersonalPlanReplacementTest {
             decide(candidates = listOf(item().copy(currentTriggerAt = cutoff)))
         }
         assertThrows(ArithmeticException::class.java) {
-            decide(authority = PersonalPlanAuthority(version = Long.MAX_VALUE))
+            decide(authority = ready(decide()).next.copy(version = Long.MAX_VALUE),
+                existing = listOf(item()), candidates = listOf(item("B")), revision = "B")
         }
     }
 
@@ -166,5 +167,53 @@ class PersonalPlanReplacementTest {
     @Test fun usedAuthorityCannotLoseItsEventBinding() {
         val used = ready(decide()).next.copy(eventId = null)
         assertThrows(IllegalArgumentException::class.java) { decide(used, listOf(item())) }
+    }
+
+    @Test fun positiveAuthorityVersionWithoutAHeadCannotAuthorizeAnotherPlan() {
+        assertThrows(IllegalArgumentException::class.java) {
+            decide(authority = PersonalPlanAuthority(version = 1, eventId = rule.id))
+        }
+    }
+
+    @Test fun zeroVersionCannotCarryAUsedPlanOrRetirement() {
+        val used = ready(decide()).next
+        assertThrows(IllegalArgumentException::class.java) {
+            decide(used.copy(version = 0), existing = listOf(item()))
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            decide(PersonalPlanAuthority(eventId = rule.id, retiredIds = setOf("lost-history")))
+        }
+    }
+
+    @Test fun onePlanCannotScheduleTheSamePersonalEventTwiceOnOneDate() {
+        val first = item()
+        val second = item(event = rule.copy(hour = 22))
+        assertNotEquals(first.plannedAt, second.plannedAt)
+        assertThrows(IllegalArgumentException::class.java) {
+            decide(candidates = listOf(first, second))
+        }
+    }
+
+    @Test fun retirementRequiresTheCompleteSameEventHistory() {
+        val first = ready(decide())
+        assertThrows(IllegalArgumentException::class.java) {
+            decide(first.next.copy(retiredIds = setOf("lost-history")), existing = listOf(item()))
+        }
+    }
+
+    @Test fun emptyPlanCanBeReevaluatedWithItsRetiredHistory() {
+        val first = ready(decide())
+        val empty = ready(decide(first.next, listOf(item()), emptyList(), "EMPTY"))
+        val replay = ready(decide(empty.next, listOf(item()), emptyList(), "EMPTY"))
+        assertEquals(empty.next, replay.next)
+        assertEquals(setOf(item().id), replay.next.retiredIds)
+        assertTrue(replay.preservedIds.isEmpty())
+        assertTrue(replay.insertions.isEmpty())
+    }
+
+    @Test fun emptyAuthorityMayAlreadyBeBoundToItsEvent() {
+        val result = ready(decide(authority = PersonalPlanAuthority(eventId = rule.id)))
+        assertEquals(1L, result.next.version)
+        assertEquals(listOf(item()), result.insertions)
     }
 }

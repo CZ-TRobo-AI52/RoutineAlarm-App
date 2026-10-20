@@ -41,6 +41,14 @@ object PersonalPlanReplacement {
         planRevision: String, zone: ZoneId, cutoff: Instant): PersonalPlanDecision {
         require(authority.version >= 0 && expectedVersion >= 0)
         require(authority.eventId == null || authority.eventId == scope.eventId)
+        if (authority.version == 0L) {
+            require(authority.activeRevision == null && authority.bindings.isEmpty() &&
+                authority.retiredIds.isEmpty()) { "An initial authority cannot contain prior plan state" }
+        } else {
+            require(authority.eventId == scope.eventId && !authority.activeRevision.isNullOrBlank()) {
+                "A used authority requires its event and current plan"
+            }
+        }
         require(authority.eventId != null || (authority.activeRevision == null && authority.bindings.isEmpty()))
         require(authority.activeRevision == null || authority.activeRevision in authority.bindings)
         require(planRevision.isNotBlank())
@@ -51,7 +59,11 @@ object PersonalPlanReplacement {
         require(existing.map { it.id }.distinct().size == existing.size)
         require(candidates.map { it.id }.distinct().size == candidates.size)
         require(candidates.map { it.plannedAt }.distinct().size == candidates.size)
+        require(candidates.map { it.nominalDate }.distinct().size == candidates.size) {
+            "A personal event may occur only once per nominal date in one plan"
+        }
         val stored = existing.associateBy { it.id }
+        require(authority.retiredIds.all { it in stored }) { "Retired occurrence history is incomplete" }
         candidates.forEach { candidate ->
             require(candidate.id.isNotBlank() && candidate.traceId.isNotBlank())
             require(candidate.scheduleRevision == planRevision && candidate.zoneId == zone.id)
