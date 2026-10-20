@@ -19,6 +19,7 @@ data class RecoveryCursor(
     val futureAfterMillis: Long? = null,
     val futureAfterId: String? = null,
     val cleanupAfter: Long = 0,
+    val scopeKey: String = "tests",
 )
 
 interface RecoveryCursorStore {
@@ -37,7 +38,9 @@ class AtomicRecoveryCursorStore(private val file: File) : RecoveryCursorStore {
         atomic.openRead().use { stream ->
             require(stream.channel.size() <= MAX_BYTES)
             val input = DataInputStream(stream)
-            require(input.readInt() == MAGIC && input.readInt() == VERSION)
+            require(input.readInt() == MAGIC)
+            val version = input.readInt()
+            require(version in 1..VERSION)
             val cycleId = input.text(256)
             val epoch = input.text(64)
             val phase = RecoveryPhase.entries.getOrNull(input.readInt()) ?: error("Unknown recovery phase")
@@ -46,8 +49,11 @@ class AtomicRecoveryCursorStore(private val file: File) : RecoveryCursorStore {
             val futureMillis = if (hasFuture) input.readLong() else null
             val futureId = if (hasFuture) input.text(MAX_ID_BYTES) else null
             val cleanupAfter = input.readLong()
+            // Published v1 checkpoints describe only the original test-alarm worker.
+            val scopeKey = if (version >= 2) input.text(MAX_SCOPE_KEY_BYTES) else "tests"
             require(input.read() == -1)
-            RecoveryCursor(cycleId, epoch, phase, through, futureMillis, futureId, cleanupAfter).also(::validate)
+            RecoveryCursor(cycleId, epoch, phase, through, futureMillis, futureId,
+                cleanupAfter, scopeKey).also(::validate)
         }
     } catch (error: FileNotFoundException) {
         if (!file.exists() && !File(file.path + ".bak").exists()) null else throw error
@@ -67,6 +73,7 @@ class AtomicRecoveryCursorStore(private val file: File) : RecoveryCursorStore {
                     output.writeLong(cursor.futureAfterMillis); output.text(cursor.futureAfterId!!)
                 }
                 output.writeLong(cursor.cleanupAfter)
+                output.text(cursor.scopeKey)
             }
             buffer.toByteArray()
         }
@@ -89,6 +96,12 @@ class AtomicRecoveryCursorStore(private val file: File) : RecoveryCursorStore {
         require(cursor.through >= 0 && cursor.cleanupAfter in 0..cursor.through)
         require((cursor.futureAfterMillis == null) == (cursor.futureAfterId == null))
         cursor.futureAfterId?.let { require(it.isNotBlank() && it.toByteArray(Charsets.UTF_8).size <= MAX_ID_BYTES) }
+        require(cursor.scopeKey.toByteArray(Charsets.UTF_8).size <= MAX_SCOPE_KEY_BYTES)
+        if (cursor.scopeKey != OccurrenceScope.Tests.key) {
+            require(cursor.scopeKey.startsWith("personal:"))
+            // Reuse the exact scope identity rules; a malformed key starts a fresh pass.
+            require(OccurrenceScope.PersonalEvent(cursor.scopeKey.removePrefix("personal:")).key == cursor.scopeKey)
+        }
     }
 
     private fun DataInputStream.text(limit: Int): String {
@@ -109,7 +122,8 @@ class AtomicRecoveryCursorStore(private val file: File) : RecoveryCursorStore {
     companion object {
         const val MAX_BYTES = 512 * 1024
         private const val MAX_ID_BYTES = 256 * 1024
+        private const val MAX_SCOPE_KEY_BYTES = 265
         private const val MAGIC = 0x52353243
-        private const val VERSION = 1
+        private const val VERSION = 2
     }
 }

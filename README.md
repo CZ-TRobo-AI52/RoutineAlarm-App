@@ -2,6 +2,18 @@
 
 Native Android-App für Routinen, Wecker und gesprochene Erinnerungen.
 
+## Alpha11: Gemeinsame Planungsbelege und begrenzter Wiederanlauf
+
+Entwicklungsstand `0.2.0-alpha11-test`, Versionscode **13**, Paket `com.cztr.routinealarm.dev`.
+
+Der vorhandene Planungs- und Wiederanlaufcode erhält einen ausdrücklich gewählten Geltungsbereich: Testwecker oder genau eine persönliche Ereignis-ID. Planungsbelege, Backup-Prüfung, begrenzte Datenbankabfragen und Fortschrittsmarken werden zusammen erweitert. Der Android-Testpfad verwendet die gemeinsame Implementierung.
+
+Die persönliche Wochenzustellung folgt weiterhin ihrem bestehenden Ablauf. Die neue Grundlage bereitet dessen schrittweise Umstellung vor; Planablösung und persönliche Restore-Aktivierung folgen als nächster zusammenhängender Schritt.
+
+- [Alpha11: Umfang und Kompatibilität](docs/ALPHA11.md)
+
+**227 Tests in 28 Suiten bestanden**, ohne Fehler oder Skips. Darunter sind 20 neue Scope-, Backup- und Recovery-Tests, die vor der Implementierung fehlschlugen, sowie ein zusätzlicher Android-Adaptertest. Debug-Build und Lint sind erfolgreich; Lint meldet 0 Fehler und 14 Warnungen. Ein Alpha11-Handytest steht aus.
+
 ## Alpha10: Trainingsabbrüche und Sitzungswechsel absichern
 
 Entwicklungsstand `0.2.0-alpha10-test`, Versionscode **12**, Paket `com.cztr.routinealarm.dev`, Android 8 oder neuer.
@@ -17,7 +29,7 @@ Der vorhandene Testalarm-Coordinator verwendet jetzt gemeinsame Zustellprüfunge
 
 **206 Tests in 26 Suites bestanden**, ohne Fehler, Fehlschläge oder übersprungene Tests. Zehn neue Diensttests sichern Training ab, neun neue SQLite-Tests den gemeinsamen Zustellvertrag. Drei Trainingsfehler wurden vor der Korrektur durch fehlgeschlagene Tests reproduziert. Gesamtsuite, Debug-Build und Lint laufen erfolgreich; Lint meldet 0 Fehler und 14 bestehende Warnungen. Der unabhängige Code-Review fand keine funktionalen Befunde.
 
-Ein Alpha10-Realgerätetest steht aus. Die Hosttests verwenden kontrollierte Sprachrückmeldungen und ersetzen keine hörbare Prüfung auf dem Handy.
+Am 20.10.2026 meldet der Nutzer zur zuletzt gelieferten Alpha10, dass sie auf dem Handy getestet wurde und funktioniert (`USER_REPORTED_REAL_DEVICE_PASS`). Zuvor genanntes Gerät: Seeker / Android 16; Modell und einzelne Prüffälle wurden in dieser neuesten Meldung nicht erneut angegeben. Rohlogs und eine unabhängige Geräteprüfung liegen nicht vor.
 
 ## Vorheriger Stand: Alpha09
 
