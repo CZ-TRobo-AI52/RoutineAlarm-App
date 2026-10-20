@@ -6,13 +6,30 @@ import java.io.IOException
 
 data class RecoveryBatchResult(val processed: Int, val complete: Boolean, val failed: Int)
 
+/** The deployed test-alarm adapter retains its original, explicit scope. */
+class TestAlarmRecovery(
+    repository: SqliteOccurrenceRepository,
+    clock: Clock,
+    schedule: (RoutineOccurrence) -> Unit,
+    cancel: (AlarmDelivery) -> CancellationObservation,
+    store: RecoveryCursorStore,
+    cycleId: String,
+    onFailure: (Exception) -> Unit = {},
+) {
+    private val delegate = OccurrenceRecovery(repository, clock, OccurrenceScope.Tests,
+        schedule, cancel, store, cycleId, onFailure)
+    fun runBatch(maxItems: Int = 64, shouldStop: () -> Boolean = { false }): RecoveryBatchResult =
+        delegate.runBatch(maxItems, shouldStop)
+}
+
 /** Bounded work over the existing desired state. No loop loads the full future/history list.
  * New recovery requests use a new cycle; retries of one request retain its cycle ID.
  * Callers serialize all batches using the same cursor file and propagate cooperative stop.
  */
-class TestAlarmRecovery(
+class OccurrenceRecovery(
     private val repository: SqliteOccurrenceRepository,
     private val clock: Clock,
+    private val scope: OccurrenceScope,
     private val schedule: (RoutineOccurrence) -> Unit,
     private val cancel: (AlarmDelivery) -> CancellationObservation,
     private val store: RecoveryCursorStore,
@@ -24,8 +41,10 @@ class TestAlarmRecovery(
         require(cycleId.isNotBlank())
         if (shouldStop()) return RecoveryBatchResult(0, false, 0)
         val epoch = repository.deliveryEpoch()
-        var cursor = store.load()?.takeIf { it.cycleId == cycleId && it.epoch == epoch }
-            ?: RecoveryCursor(cycleId, epoch, RecoveryPhase.FUTURE, repository.schedulingWatermark()).also(store::save)
+        var cursor = store.load()?.takeIf {
+            it.cycleId == cycleId && it.epoch == epoch && it.scopeKey == scope.key
+        } ?: RecoveryCursor(cycleId, epoch, RecoveryPhase.FUTURE, repository.schedulingWatermark(),
+            scopeKey = scope.key).also(store::save)
         var processed = 0
         var failed = 0
         fun result() = RecoveryBatchResult(processed, cursor.phase == RecoveryPhase.COMPLETE, failed)
@@ -40,7 +59,7 @@ class TestAlarmRecovery(
             if (repository.deliveryEpoch() != cursor.epoch) return RecoveryBatchResult(processed, false, failed)
             when (cursor.phase) {
                 RecoveryPhase.FUTURE -> {
-                    val page = repository.futureTestsPage(clock.instant(), cursor.futureAfterMillis,
+                    val page = repository.futureOccurrencesPage(scope, clock.instant(), cursor.futureAfterMillis,
                         cursor.futureAfterId, maxItems - processed)
                     if (page.isEmpty()) {
                         checkpoint(cursor.copy(phase = RecoveryPhase.CLEANUP))
@@ -51,7 +70,7 @@ class TestAlarmRecovery(
                         // Re-read before invoking the scheduling adapter, whose own final
                         // check still closes preparation races immediately before Android.
                         val current = repository.get(item.id)
-                        val allowed = current == item && repository.isDeliveryAllowed(item.id) &&
+                        val allowed = current == item && scope.accepts(item) && repository.isDeliveryAllowed(item.id) &&
                             item.currentTriggerAt > clock.instant()
                         if (shouldStop()) return result()
                         if (allowed) {
@@ -65,7 +84,7 @@ class TestAlarmRecovery(
                     }
                 }
                 RecoveryPhase.CLEANUP -> {
-                    val page = repository.knownTestDeliveries(cursor.through, cursor.cleanupAfter)
+                    val page = repository.knownDeliveries(scope, cursor.through, cursor.cleanupAfter)
                         .take(maxItems - processed)
                     if (page.isEmpty()) {
                         checkpoint(cursor.copy(phase = RecoveryPhase.COMPLETE))
@@ -73,7 +92,7 @@ class TestAlarmRecovery(
                     }
                     for (known in page) {
                         if (shouldStop()) return result()
-                        val obsolete = TestAlarmReconciliation.isObsolete(repository, known.token)
+                        val obsolete = OccurrenceReconciliation.isObsolete(repository, known.token, scope)
                         if (shouldStop()) return result()
                         if (obsolete) {
                             try { cancel(known.token) }

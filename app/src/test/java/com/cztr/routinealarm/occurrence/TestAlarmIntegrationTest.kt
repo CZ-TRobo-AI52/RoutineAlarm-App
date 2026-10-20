@@ -8,6 +8,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import com.cztr.routinealarm.AlarmScheduler
+import com.cztr.routinealarm.PersonalSchedule
 import com.cztr.routinealarm.execution.*
 import com.cztr.routinealarm.support.awaitUi
 import com.cztr.routinealarm.support.awaitUiReadersStopped
@@ -25,6 +26,7 @@ import org.robolectric.annotation.LooperMode
 import org.robolectric.annotation.SQLiteMode
 import java.time.Clock
 import java.time.Duration
+import java.time.LocalDate
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28])
@@ -76,6 +78,26 @@ class TestAlarmIntegrationTest {
         assertEquals(AlarmDelivery.from(item), TestAlarmRuntime.token(shadowOf(scheduled.operation).savedIntent))
         assertEquals(item.currentTriggerAt.toEpochMilli(), scheduled.triggerAtTime)
         assertEquals("SCHEDULE", repo.history(item.id).single().actionType)
+    }
+
+    @Test fun testAndroidAdapterDoesNotScheduleRecoverOrDeliverPersonalOccurrences() {
+        val clock = Clock.systemDefaultZone()
+        val event = PersonalSchedule.allEvents.single { it.id == "evening_messages_2110" }
+        fun personal(days: Long) = OccurrencePlanner(clock).plan(
+            listOf(event), LocalDate.now(clock).plusDays(days), 1, clock.zone, "adapter-boundary:$days",
+        ).single().also { repo.materialize(listOf(it)) }
+        val future = personal(1)
+        val overdue = personal(-1)
+        val before = repo.exportBackup()
+        assertThrows(IllegalStateException::class.java) { TestAlarmRuntime.schedule(context, future) }
+        TestAlarmRuntime.restoreFuture(context)
+        TestAlarmReceiver().onReceive(context, intent(overdue, TestAlarmReceiver::class.java))
+
+        assertTrue(shadowOf(context.getSystemService(android.app.AlarmManager::class.java)).scheduledAlarms.isEmpty())
+        assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
+        assertArrayEquals(before, repo.exportBackup())
+        assertTrue(repo.schedulingAttempts(future.id).isEmpty())
+        assertEquals(OccurrenceStatus.SCHEDULED, repo.get(overdue.id)!!.status)
     }
 
     @Test fun receiverReadsStoredPayloadAndDropsTerminalReplay() {

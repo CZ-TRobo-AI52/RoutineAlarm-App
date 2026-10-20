@@ -21,16 +21,17 @@ data class SchedulingAttempt(
 }
 
 /** No transaction spans the external call. The durable attempt exposes both crash windows. */
-class TestAlarmScheduling(
+class OccurrenceScheduling(
     private val repository: SqliteOccurrenceRepository,
     private val clock: Clock,
+    private val scope: OccurrenceScope,
     private val canSchedule: () -> Boolean,
     private val platformSchedule: (RoutineOccurrence) -> Unit,
     private val afterAttempt: (SchedulingAttempt) -> Unit = {},
     private val afterPlatformReturn: () -> Unit = {},
 ) {
     fun schedule(occurrence: RoutineOccurrence, futureOnly: Boolean): Boolean {
-        val attempt = repository.beginSchedulingAttempt(occurrence, futureOnly) ?: return false
+        val attempt = repository.beginSchedulingAttempt(occurrence, futureOnly, scope) ?: return false
         afterAttempt(attempt)
         if (repository.get(occurrence.id) != occurrence) {
             repository.recordSchedulingReceipt(attempt.id, SchedulingOutcome.NOT_CALLED, SchedulingReason.STALE)
@@ -46,7 +47,7 @@ class TestAlarmScheduling(
         }
         try {
             // Permission queries can consume time or race a user action.
-            requireCurrentBeforeCall(repository, occurrence, clock, futureOnly)
+            requireCurrentBeforeCall(repository, occurrence, clock, futureOnly, scope)
             platformSchedule(occurrence)
         } catch (notCalled: SchedulingNotCalled) {
             repository.recordSchedulingReceipt(attempt.id, SchedulingOutcome.NOT_CALLED, notCalled.reason)
@@ -67,11 +68,34 @@ class TestAlarmScheduling(
     companion object {
         /** Also called by the Android adapter after PendingIntent preparation. */
         fun requireCurrentBeforeCall(repository: SqliteOccurrenceRepository, occurrence: RoutineOccurrence,
-            clock: Clock, futureOnly: Boolean) {
-            if (!repository.isDeliveryAllowed(occurrence.id) || repository.get(occurrence.id) != occurrence)
+            clock: Clock, futureOnly: Boolean, scope: OccurrenceScope) {
+            if (!scope.accepts(occurrence) || !repository.isDeliveryAllowed(occurrence.id) ||
+                repository.get(occurrence.id) != occurrence)
                 throw SchedulingNotCalled(SchedulingReason.STALE)
             if (futureOnly && occurrence.currentTriggerAt.toEpochMilli() <= clock.millis())
                 throw SchedulingNotCalled(SchedulingReason.EXPIRED)
         }
+    }
+}
+
+/** Existing Android callers retain their test-only scope and final preparation check. */
+class TestAlarmScheduling(
+    repository: SqliteOccurrenceRepository,
+    clock: Clock,
+    canSchedule: () -> Boolean,
+    platformSchedule: (RoutineOccurrence) -> Unit,
+    afterAttempt: (SchedulingAttempt) -> Unit = {},
+    afterPlatformReturn: () -> Unit = {},
+) {
+    private val delegate = OccurrenceScheduling(
+        repository, clock, OccurrenceScope.Tests, canSchedule, platformSchedule, afterAttempt, afterPlatformReturn,
+    )
+    fun schedule(occurrence: RoutineOccurrence, futureOnly: Boolean): Boolean =
+        delegate.schedule(occurrence, futureOnly)
+
+    companion object {
+        fun requireCurrentBeforeCall(repository: SqliteOccurrenceRepository, occurrence: RoutineOccurrence,
+            clock: Clock, futureOnly: Boolean) =
+            OccurrenceScheduling.requireCurrentBeforeCall(repository, occurrence, clock, futureOnly, OccurrenceScope.Tests)
     }
 }
