@@ -66,7 +66,7 @@ class SqliteOccurrenceRepository(
 
     /** Capture all five data tables in one SQLite snapshot; no provider I/O holds this transaction. */
     fun exportBackup(): ByteArray {
-        val snapshot = transaction(OccurrenceBackup::read)
+        val snapshot = transaction { db -> PersonalPlanPersistence.requireLegacyBackupCompatible(db); OccurrenceBackup.read(db) }
         OccurrenceBackup.validate(snapshot)
         return OccurrenceBackup.encode(snapshot)
     }
@@ -75,6 +75,7 @@ class SqliteOccurrenceRepository(
     fun restoreBackup(bytes: ByteArray): Int {
         val snapshot = OccurrenceBackup.decode(bytes)
         return transaction { db ->
+            PersonalPlanPersistence.requireLegacyBackupCompatible(db)
             OccurrenceBackup.tables.forEach { table ->
                 db.rawQuery("SELECT 1 FROM ${table.name} LIMIT 1", null).use {
                     check(!it.moveToFirst()) { "Restore requires an empty occurrence store; existing data was retained" }
@@ -94,11 +95,49 @@ class SqliteOccurrenceRepository(
         "SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null,
     ).use { check(it.moveToFirst()); it.getString(0) }
 
+    /** Staging API; personal receiver/UI activation requires backup format 2 first.
+     * A stale writer receives Conflict. An identical retry at the current version is a no-op.
+     */
+    fun personalPlanAuthority(scope: OccurrenceScope.PersonalEvent): PersonalPlanAuthority =
+        readSnapshot { PersonalPlanPersistence.read(it, scope.eventId) }
+
+    fun replacePersonalPlan(scope: OccurrenceScope.PersonalEvent, expectedVersion: Long,
+        candidates: List<RoutineOccurrence>, planRevision: String, zone: ZoneId,
+        cutoff: Instant): PersonalPlanDecision = transaction { db ->
+        val authority = PersonalPlanPersistence.read(db, scope.eventId)
+        val existing = db.query("occurrences", arrayOf("snapshot"), "is_test = 0 AND event_id = ?",
+            arrayOf(scope.eventId), null, null, "occurrence_id").use { cursor -> buildList {
+            while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
+        } }
+        db.rawQuery("""SELECT 1 FROM restored_occurrences r JOIN occurrences o
+            ON r.occurrence_id = o.occurrence_id WHERE o.is_test = 0 AND o.event_id = ? LIMIT 1""",
+            arrayOf(scope.eventId)).use {
+            check(!it.moveToFirst()) { "Restored personal occurrences require separate explicit activation" }
+        }
+        val decision = PersonalPlanReplacement.decide(scope, authority, expectedVersion,
+            existing, candidates, planRevision, zone, cutoff)
+        if (decision is PersonalPlanDecision.Ready && decision.next.version != authority.version) {
+            decision.insertions.forEach { occurrence ->
+                requireInitial(occurrence)
+                freezeZone(db, occurrence)
+                db.insertOrThrow("occurrences", null, values(occurrence))
+                journal(db, "schedule:" + occurrence.id, null, ActionResult(Outcome.APPLIED, occurrence), null)
+            }
+            PersonalPlanPersistence.commit(db, decision, cutoff, clock.instant())
+        }
+        decision
+    }
+
+    fun isPersonalPlanRetired(id: String): Boolean =
+        PersonalPlanPersistence.isRetired(helper.readableDatabase, id)
+
     override fun isDeliveryAllowed(id: String): Boolean = deliveryAllowed(helper.readableDatabase, id)
 
     private fun deliveryAllowed(db: SQLiteDatabase, id: String): Boolean = db.rawQuery(
         """SELECT 1 FROM occurrences o WHERE o.occurrence_id = ? AND NOT EXISTS
-            (SELECT 1 FROM restored_occurrences r WHERE r.occurrence_id = o.occurrence_id)""", arrayOf(id),
+            (SELECT 1 FROM restored_occurrences r WHERE r.occurrence_id = o.occurrence_id)
+            AND NOT EXISTS (SELECT 1 FROM personal_plan_retirements p
+                WHERE p.occurrence_id = o.occurrence_id)""", arrayOf(id),
     ).use { it.moveToFirst() }
 
     fun restorePausedCount(): Int = helper.readableDatabase.rawQuery(
@@ -119,6 +158,9 @@ class SqliteOccurrenceRepository(
             if (existing != null) {
                 require(sameIdentity(existing, occurrence)) { "Occurrence ID reused with a different schedule identity" }
             } else {
+                if (!occurrence.isTest) check(PersonalPlanPersistence.read(db, occurrence.eventId).version == 0L) {
+                    "New personal occurrences must use the authoritative replacement transaction"
+                }
                 db.insertOrThrow("occurrences", null, values(occurrence))
                 journal(
                     db = db, actionId = "schedule:${occurrence.id}", current = null,
@@ -231,7 +273,8 @@ class SqliteOccurrenceRepository(
         }
         args.addAll(listOf("SCHEDULED", "SNOOZED", after.toEpochMilli().toString()))
         var selection = "$scopeSelection AND status IN (?, ?) AND current_trigger_at > ? " +
-            "AND NOT EXISTS (SELECT 1 FROM restored_occurrences r WHERE r.occurrence_id = occurrences.occurrence_id)"
+            "AND NOT EXISTS (SELECT 1 FROM restored_occurrences r WHERE r.occurrence_id = occurrences.occurrence_id) " +
+            "AND NOT EXISTS (SELECT 1 FROM personal_plan_retirements p WHERE p.occurrence_id = occurrences.occurrence_id)"
         if (afterTriggerMillis != null) {
             selection += " AND (current_trigger_at > ? OR (current_trigger_at = ? AND occurrence_id > ?))"
             args.add(afterTriggerMillis.toString()); args.add(afterTriggerMillis.toString()); args.add(afterId!!)
@@ -289,6 +332,7 @@ class SqliteOccurrenceRepository(
             }
         }
         val current = requireNotNull(get(db, action.occurrenceId)) { "Unknown occurrence: ${action.occurrenceId}" }
+        check(!PersonalPlanPersistence.isRetired(db, current.id)) { "This personal occurrence was retired by a newer plan" }
         val transition = OccurrenceTransitions.apply(current, action)
         val result = ActionResult(transition.outcome, transition.occurrence, transition.reason)
         if (result.outcome == Outcome.APPLIED) {
@@ -327,7 +371,7 @@ class SqliteOccurrenceRepository(
 
     fun beginSchedulingAttempt(expected: RoutineOccurrence, futureOnly: Boolean,
         scope: OccurrenceScope): SchedulingAttempt? = transaction { db ->
-        check(deliveryAllowed(db, expected.id)) { "Dieses wiederhergestellte Ereignis muss zuerst ausdrücklich aktiviert werden." }
+        check(deliveryAllowed(db, expected.id)) { "Dieses Ereignis ist für die Zustellung gesperrt." }
         val current = get(db, expected.id)
         check(current == expected && scope.accepts(current) && current.status in
             setOf(OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED)) { "Dieses Ereignis wurde geändert oder gehört nicht zum ausgewählten Bereich." }
@@ -544,9 +588,9 @@ class SqliteOccurrenceRepository(
     }
 }
 
-/** Schema 4 adds an identity index; historical rows, restore permissions and epochs remain unchanged. */
+/** Schema 5 adds personal authority and monotonic retirement without changing execution evidence. */
 private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHelper(
-    context, name, null, 4,
+    context, name, null, 5,
     DatabaseErrorHandler { throw SQLiteException("Occurrence database is corrupt; original file retained") },
 ) {
     override fun onConfigure(db: SQLiteDatabase) {
@@ -563,15 +607,16 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(oldVersion in 1..3 && newVersion == 4) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
+        check(oldVersion in 1..4 && newVersion == 5) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
         // SQLiteOpenHelper wraps onUpgrade and its version change in one transaction.
-        validate(db, when (oldVersion) { 1 -> V1_SCHEMA; 2 -> V2_SCHEMA; else -> V3_SCHEMA })
+        validate(db, when (oldVersion) { 1 -> V1_SCHEMA; 2 -> V2_SCHEMA; 3 -> V3_SCHEMA; else -> V4_SCHEMA })
         if (oldVersion == 1) SCHEDULING_SCHEMA.values.forEach(db::execSQL)
         if (oldVersion < 3) {
             RESTORE_SCHEMA.values.forEach(db::execSQL)
             initializeMetadata(db)
         }
-        RECONCILIATION_SCHEMA.values.forEach(db::execSQL)
+        if (oldVersion < 4) RECONCILIATION_SCHEMA.values.forEach(db::execSQL)
+        PersonalPlanPersistence.schema.values.forEach(db::execSQL)
         validate(db, SCHEMA)
     }
 
@@ -687,7 +732,8 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
         private val RECONCILIATION_SCHEMA = linkedMapOf(
             "scheduling_identity" to "CREATE INDEX scheduling_identity ON scheduling_attempts(occurrence_id, generation, revision, sequence)",
         )
-        private val SCHEMA = V3_SCHEMA + RECONCILIATION_SCHEMA
+        private val V4_SCHEMA = V3_SCHEMA + RECONCILIATION_SCHEMA
+        private val SCHEMA = V4_SCHEMA + PersonalPlanPersistence.schema
     }
 }
 

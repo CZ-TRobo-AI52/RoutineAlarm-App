@@ -71,6 +71,7 @@ class OccurrenceReconciliation(
             if (!token.valid || token.epoch != repository.deliveryEpoch()) return false
             val current = repository.get(token.occurrenceId)?.takeIf(scope::accepts) ?: return false
             if (current.generation < token.generation || current.revision < token.revision) return false
+            if (repository.isPersonalPlanRetired(current.id)) return true
             if (current.status in setOf(OccurrenceStatus.DONE, OccurrenceStatus.SKIPPED, OccurrenceStatus.MISSED))
                 return true
             if (current.generation > token.generation) return true

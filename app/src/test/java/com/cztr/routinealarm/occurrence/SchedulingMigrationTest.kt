@@ -75,7 +75,7 @@ class SchedulingMigrationTest {
             assertEquals(1, it.history("legacy-occ").size)
         }
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use {
-            assertEquals(4, it.version)
+            assertEquals(5, it.version)
             it.rawQuery("SELECT zone_id FROM schedule_revisions WHERE revision_id='legacy'", null).use { row ->
                 assertTrue(row.moveToFirst()); assertEquals("UTC", row.getString(0))
             }
@@ -153,7 +153,7 @@ class SchedulingMigrationTest {
             assertTrue(it.exportBackup().isNotEmpty())
         }
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use {
-            assertEquals(4, it.version)
+            assertEquals(5, it.version)
             it.rawQuery("SELECT count(*) FROM restored_occurrences", null).use { row -> row.moveToFirst(); assertEquals(0, row.getInt(0)) }
         }
     }
@@ -206,7 +206,7 @@ class SchedulingMigrationTest {
             }
         }
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READONLY).use {
-            assertEquals(4, it.version)
+            assertEquals(5, it.version)
         }
     }
 
