@@ -47,13 +47,6 @@ internal object PersonalPlanPersistence {
         }
     }
 
-    /** Format 1 cannot represent authority. Refuse incomplete backups until format 2 exists. */
-    fun requireLegacyBackupCompatible(db: SQLiteDatabase) {
-        db.rawQuery("SELECT 1 FROM personal_plan_commits LIMIT 1", null).use {
-            check(!it.moveToFirst()) { "Personal plan authority requires a newer backup format; data was retained" }
-        }
-    }
-
     val schema = linkedMapOf(
         "personal_plan_commits" to """CREATE TABLE personal_plan_commits (
             event_id TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0),

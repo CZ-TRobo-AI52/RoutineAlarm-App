@@ -64,9 +64,9 @@ class SqliteOccurrenceRepository(
 ) : OccurrenceRepository {
     private val helper = OccurrenceDatabase(context.applicationContext, name)
 
-    /** Capture all five data tables in one SQLite snapshot; no provider I/O holds this transaction. */
+    /** Capture execution data and plan lineage in one snapshot; provider I/O is outside it. */
     fun exportBackup(): ByteArray {
-        val snapshot = transaction { db -> PersonalPlanPersistence.requireLegacyBackupCompatible(db); OccurrenceBackup.read(db) }
+        val snapshot = transaction { db -> OccurrenceBackup.read(db) }
         OccurrenceBackup.validate(snapshot)
         return OccurrenceBackup.encode(snapshot)
     }
@@ -75,7 +75,6 @@ class SqliteOccurrenceRepository(
     fun restoreBackup(bytes: ByteArray): Int {
         val snapshot = OccurrenceBackup.decode(bytes)
         return transaction { db ->
-            PersonalPlanPersistence.requireLegacyBackupCompatible(db)
             OccurrenceBackup.tables.forEach { table ->
                 db.rawQuery("SELECT 1 FROM ${table.name} LIMIT 1", null).use {
                     check(!it.moveToFirst()) { "Restore requires an empty occurrence store; existing data was retained" }
@@ -95,7 +94,7 @@ class SqliteOccurrenceRepository(
         "SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null,
     ).use { check(it.moveToFirst()); it.getString(0) }
 
-    /** Staging API; personal receiver/UI activation requires backup format 2 first.
+    /** Staging API; personal receiver/UI activation needs its own authority validation.
      * A stale writer receives Conflict. An identical retry at the current version is a no-op.
      */
     fun personalPlanAuthority(scope: OccurrenceScope.PersonalEvent): PersonalPlanAuthority =

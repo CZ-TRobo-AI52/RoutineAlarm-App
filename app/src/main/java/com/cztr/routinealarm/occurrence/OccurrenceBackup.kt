@@ -23,11 +23,11 @@ internal object OccurrenceBackup {
     const val MAX_BYTES = 8 * 1024 * 1024
     private const val MAX_ROWS = 50_000
     private const val MAX_STRING_BYTES = 256 * 1024
-    private val magic = "R52BKUP1".toByteArray(Charsets.US_ASCII)
+    private fun magic(version: Int) = "R52BKUP$version".toByteArray(Charsets.US_ASCII)
 
     data class Column(val name: String, val integer: Boolean = false, val nullable: Boolean = false)
     data class Table(val name: String, val columns: List<Column>, val order: String)
-    data class Snapshot(val tables: List<List<List<Any?>>>)
+    data class Snapshot(val tables: List<List<List<Any?>>>, val formatVersion: Int = 2)
     private fun columns(spec: String) = spec.split(' ').map {
         Column(it.removeSuffix("?").removeSuffix(":"), it.removeSuffix("?").endsWith(":"), it.endsWith("?"))
     }
@@ -37,6 +37,8 @@ internal object OccurrenceBackup {
         Table("execution_journal", columns("sequence: action_id occurrence_id action_type actor occurred_at: recorded_at: occurred_at_exact recorded_at_exact expected_revision: expected_generation: resulting_revision: previous_status? resulting_status generation: snooze_minutes:? source reason? outcome action_snapshot? result_snapshot result_reason?"), "sequence"),
         Table("scheduling_attempts", columns("sequence: attempt_id occurrence_id revision: generation: trigger_at: started_at_exact"), "sequence"),
         Table("scheduling_receipts", columns("attempt_id outcome reason recorded_at_exact"), "attempt_id"),
+        Table("personal_plan_commits", columns("event_id version: plan_revision fingerprint cutoff_exact recorded_at_exact"), "event_id, version"),
+        Table("personal_plan_retirements", columns("occurrence_id event_id plan_version:"), "occurrence_id"),
     )
 
     fun read(db: SQLiteDatabase): Snapshot {
@@ -65,9 +67,15 @@ internal object OccurrenceBackup {
     }
 
     fun encode(snapshot: Snapshot): ByteArray {
+        require(snapshot.formatVersion in 1..2)
+        require(snapshot.tables.size == tables.size)
+        if (snapshot.formatVersion == 1) require(snapshot.tables.drop(5).all { it.isEmpty() }) {
+            "Legacy backup cannot represent personal authority"
+        }
+        val encodedTables = if (snapshot.formatVersion == 1) tables.take(5) else tables
         val payload = ByteArrayOutputStream()
         DataOutputStream(payload).use { output ->
-            tables.forEachIndexed { tableIndex, table ->
+            encodedTables.forEachIndexed { tableIndex, table ->
                 val rows = snapshot.tables[tableIndex]
                 output.writeInt(rows.size)
                 rows.forEach { row -> table.columns.forEachIndexed { index, column ->
@@ -85,7 +93,7 @@ internal object OccurrenceBackup {
         }
         val result = ByteArrayOutputStream()
         DataOutputStream(result).use {
-            it.write(magic); it.writeInt(1); it.writeInt(payload.size()); payload.writeTo(it)
+            it.write(magic(snapshot.formatVersion)); it.writeInt(snapshot.formatVersion); it.writeInt(payload.size()); payload.writeTo(it)
         }
         val data = result.toByteArray()
         return data + MessageDigest.getInstance("SHA-256").digest(data)
@@ -99,10 +107,11 @@ internal object OccurrenceBackup {
                 bytes.copyOfRange(bytes.size - 32, bytes.size))) { "Backup checksum mismatch" }
             val input = DataInputStream(ByteArrayInputStream(data))
             val signature = ByteArray(8).also(input::readFully)
-            require(signature.contentEquals(magic) && input.readInt() == 1) { "Unsupported backup format" }
+            val version = input.readInt()
+            require(version in 1..2 && signature.contentEquals(magic(version))) { "Unsupported backup format" }
             require(input.readInt() == input.available()) { "Invalid backup length" }
             var totalRows = 0
-            val snapshot = Snapshot(tables.map { table ->
+            val decodedTables = (if (version == 1) tables.take(5) else tables).map { table ->
                 val count = input.readInt()
                 require(count in 0..MAX_ROWS && totalRows + count <= MAX_ROWS && count <= input.available()) { "Invalid record count" }
                 totalRows += count
@@ -119,7 +128,8 @@ internal object OccurrenceBackup {
                         else -> throw IllegalArgumentException("Invalid field marker")
                     }
                 } }
-            })
+            }
+            val snapshot = Snapshot(if (version == 1) decodedTables + listOf(emptyList(), emptyList()) else decodedTables, version)
             require(input.available() == 0) { "Trailing backup content" }
             validate(snapshot)
             return snapshot
@@ -234,6 +244,34 @@ internal object OccurrenceBackup {
                 SchedulingOutcome.NOT_CALLED -> reason in setOf(SchedulingReason.PERMISSION_DENIED, SchedulingReason.STALE, SchedulingReason.EXPIRED)
             })
             Instant.parse(row.text("recorded_at_exact")).toEpochMilli()
+        }
+        // These are saved historical bindings, not authenticated external authority. Older plan
+        // commits do not record candidate membership, so never invent it from today's projection.
+        val commits = linkedMapOf<Pair<String, Long>, Map<String, Any?>>()
+        val versions = mutableMapOf<String, Long>()
+        val revisionsPerEvent = mutableSetOf<Pair<String, String>>()
+        rows(5).forEach { row ->
+            val event = row.text("event_id")
+            OccurrenceScope.PersonalEvent(event)
+            val version = row.number("version")
+            require(version == Math.addExact(versions[event] ?: 0L, 1L)) { "Incomplete plan history" }
+            versions[event] = version
+            require(row.text("plan_revision").isNotBlank())
+            require(revisionsPerEvent.add(event to row.text("plan_revision"))) { "Reused plan revision" }
+            require(row.text("fingerprint").matches(Regex("[0-9a-f]{64}"))) { "Invalid plan fingerprint" }
+            Instant.parse(row.text("cutoff_exact")).toEpochMilli()
+            Instant.parse(row.text("recorded_at_exact")).toEpochMilli()
+            require(commits.put(event to version, row) == null)
+        }
+        rows(6).associateUnique("occurrence_id").values.forEach { row ->
+            val saved = expected[row.text("occurrence_id")]
+            val commit = commits[row.text("event_id") to row.number("plan_version")]
+            require(saved != null && commit != null) { "Retirement without occurrence or plan" }
+            require(!saved.isTest && saved.eventId == row.text("event_id")) { "Cross-scope retirement" }
+            require(saved.status == OccurrenceStatus.SCHEDULED && saved.revision == 0L &&
+                saved.generation == 0L && saved.snoozeCount == 0 && saved.totalSnoozeMinutes == 0 &&
+                saved.currentTriggerAt == saved.plannedAt &&
+                saved.plannedAt > Instant.parse(commit.text("cutoff_exact"))) { "Invalid retired execution" }
         }
     }
 

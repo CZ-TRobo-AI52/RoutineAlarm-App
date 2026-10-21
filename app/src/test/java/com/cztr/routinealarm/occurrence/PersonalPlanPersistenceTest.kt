@@ -101,13 +101,26 @@ class PersonalPlanPersistenceTest {
         }
     }
 
-    @Test fun pendingBackupFormatCannotSilentlyLosePlanAuthority() {
+    @Test fun backupPreservesAuthorityRetirementAndUnknownEffectsWithoutActivation() {
         repo().use {
             val legacy = it.exportBackup()
             replace(it, 0, "A")
-            assertThrows(IllegalStateException::class.java) { it.exportBackup() }
+            it.beginSchedulingAttempt(item("A"), true, scope)
+            replace(it, 1, "B")
+            val bytes = it.exportBackup()
+            assertEquals("R52BKUP2", bytes.take(8).toByteArray().toString(Charsets.US_ASCII))
+            SqliteOccurrenceRepository(context, clock, "copy.db").use { restored ->
+                assertEquals(2, restored.restoreBackup(bytes))
+                assertEquals(it.personalPlanAuthority(scope), restored.personalPlanAuthority(scope))
+                assertEquals(it.history(item("A").id), restored.history(item("A").id))
+                assertEquals(it.schedulingAttempts(item("A").id), restored.schedulingAttempts(item("A").id))
+                assertFalse(restored.isDeliveryAllowed(item("A").id))
+                assertFalse(restored.isDeliveryAllowed(item("B").id))
+                assertNotEquals(it.deliveryEpoch(), restored.deliveryEpoch())
+                assertArrayEquals(bytes, restored.exportBackup())
+            }
             assertThrows(IllegalStateException::class.java) { it.restoreBackup(legacy) }
-            assertEquals(1L, it.personalPlanAuthority(scope).version)
+            assertEquals(2L, it.personalPlanAuthority(scope).version)
         }
     }
 
@@ -119,6 +132,98 @@ class PersonalPlanPersistenceTest {
             assertEquals(0L, it.personalPlanAuthority(scope).version)
             assertEquals(1, it.restorePausedCount())
             assertNull(it.get(item("B").id))
+        }
+    }
+
+    @Test fun legacyBackupImportsWithoutInventingPersonalAuthority() {
+        val legacy = repo().use {
+            it.materialize(listOf(item("A")))
+            OccurrenceBackup.encode(OccurrenceBackup.decode(it.exportBackup()).copy(formatVersion = 1))
+        }
+        assertEquals("R52BKUP1", legacy.take(8).toByteArray().toString(Charsets.US_ASCII))
+        SqliteOccurrenceRepository(context, clock, "copy.db").use {
+            assertEquals(1, it.restoreBackup(legacy))
+            assertEquals(0L, it.personalPlanAuthority(scope).version)
+            assertFalse(it.isDeliveryAllowed(item("A").id))
+        }
+    }
+
+    @Test fun backupOfEmptyPlanAndLegacyAdoptionPreservesOpaqueBinding() {
+        val due = item("A").copy(id = "already-due", nominalDate = LocalDate.parse("2026-10-19"),
+            plannedAt = item("A").plannedAt.minusSeconds(86400),
+            currentTriggerAt = item("A").plannedAt.minusSeconds(86400))
+        val bytes = repo().use {
+            it.materialize(listOf(due))
+            replace(it, 0, "A") // Binding includes only the new candidate, not the due legacy row.
+            replace(it, 1, "OFF", emptyList())
+            assertThrows(IllegalArgumentException::class.java) {
+                OccurrenceBackup.encode(OccurrenceBackup.decode(it.exportBackup()).copy(formatVersion = 1))
+            }
+            it.exportBackup()
+        }
+        SqliteOccurrenceRepository(context, clock, "copy.db").use {
+            it.restoreBackup(bytes)
+            assertEquals("OFF", it.personalPlanAuthority(scope).activeRevision)
+            assertEquals(due, it.get(due.id))
+            assertArrayEquals(bytes, it.exportBackup())
+        }
+    }
+
+    @Test fun invalidPlanLineageRejectsBeforeAnyDestinationMutation() {
+        val saved = repo().use { replace(it, 0, "A"); replace(it, 1, "B");
+            OccurrenceBackup.decode(it.exportBackup()) }
+        val mutations = listOf(
+            Triple(5, "version", 0L), Triple(5, "version", 2L),
+            Triple(5, "fingerprint", "invalid"), Triple(5, "plan_revision", ""),
+            Triple(5, "cutoff_exact", "not-a-date"),
+            Triple(6, "event_id", "other"), Triple(6, "plan_version", 99L),
+            Triple(6, "occurrence_id", "missing"),
+        )
+        SqliteOccurrenceRepository(context, clock, "copy.db").use { target ->
+            for ((table, column, bad) in mutations) {
+                val columnIndex = OccurrenceBackup.tables[table].columns.indexOfFirst { it.name == column }
+                val changed = saved.copy(tables = saved.tables.mapIndexed { ti, rows ->
+                    rows.mapIndexed { ri, row -> row.mapIndexed { ci, cell ->
+                        if (ti == table && ri == 0 && ci == columnIndex) bad else cell
+                    } }
+                })
+                assertThrows("$table.$column", IllegalArgumentException::class.java) {
+                    target.restoreBackup(OccurrenceBackup.encode(changed))
+                }
+                assertNull(target.get(item("A").id))
+                assertEquals(0L, target.personalPlanAuthority(scope).version)
+                assertEquals("", target.deliveryEpoch())
+                assertEquals(0, target.restorePausedCount())
+            }
+        }
+    }
+
+    @Test fun restoreCommitFailureRollsBackLineageQuarantineAndEpoch() {
+        val bytes = repo().use { replace(it, 0, "A"); replace(it, 1, "B"); it.exportBackup() }
+        SqliteOccurrenceRepository(context, clock, "copy.db") { error("before restore commit") }.use {
+            assertThrows(IllegalStateException::class.java) { it.restoreBackup(bytes) }
+        }
+        SqliteOccurrenceRepository(context, clock, "copy.db").use {
+            assertEquals(0L, it.personalPlanAuthority(scope).version)
+            assertNull(it.get(item("A").id)); assertEquals("", it.deliveryEpoch())
+            assertEquals(0, it.restorePausedCount())
+            assertEquals(2, it.restoreBackup(bytes))
+            assertEquals(2L, it.personalPlanAuthority(scope).version)
+        }
+    }
+
+    @Test fun duplicateAndOrphanRetirementsAreRejected() {
+        val saved = repo().use { replace(it, 0, "A"); replace(it, 1, "B");
+            OccurrenceBackup.decode(it.exportBackup()) }
+        val malformed = listOf(
+            saved.copy(tables = saved.tables.mapIndexed { i, rows -> if (i == 6) rows + rows else rows }),
+            saved.copy(tables = saved.tables.mapIndexed { i, rows -> if (i == 5) emptyList() else rows }),
+        )
+        SqliteOccurrenceRepository(context, clock, "copy.db").use { target ->
+            malformed.forEach { invalid ->
+                assertThrows(IllegalArgumentException::class.java) { target.restoreBackup(OccurrenceBackup.encode(invalid)) }
+                assertNull(target.get(item("A").id))
+            }
         }
     }
 
