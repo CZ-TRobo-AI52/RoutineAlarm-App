@@ -1,0 +1,38 @@
+{
+  "schema": "R52_ANDROID_SOURCE_REVIEW/1",
+  "candidate": "0f8eb8ca8252e197d114bf81d5f340dcbd24f4a8",
+  "candidate_tree": "46756c7799d8714b3eeaf62438693c5b0b231d92",
+  "parent": "ba7810655169231ebfcc313b4b627fc198d30800",
+  "local_alpha11": "b4996e192e7a70cc7a6191bbd9241e8a6029040e",
+  "remote_alpha11": "a09c64873dc8d535007b0b18cea326dc09860e2f",
+  "source_zip_sha256": "6e03557287e2a5f8c2538c6b960644bb5fedbc95f7c603cf05cb68ca5a2eaafd",
+  "changed_paths": [
+    "app/src/main/java/com/cztr/routinealarm/occurrence/OccurrenceRepository.kt",
+    "app/src/main/java/com/cztr/routinealarm/occurrence/PersonalPlanPersistence.kt",
+    "app/src/main/java/com/cztr/routinealarm/occurrence/PersonalPlanReplacement.kt",
+    "app/src/main/java/com/cztr/routinealarm/occurrence/TestAlarmReconciliation.kt",
+    "app/src/test/java/com/cztr/routinealarm/occurrence/PersonalPlanPersistenceTest.kt",
+    "app/src/test/java/com/cztr/routinealarm/occurrence/PersonalPlanReplacementTest.kt",
+    "app/src/test/java/com/cztr/routinealarm/occurrence/SchedulingMigrationTest.kt",
+    "docs/PERSONAL_PLAN_PERSISTENCE.md",
+    "docs/PERSONAL_PLAN_REPLACEMENT.md"
+  ],
+  "tests": {
+    "failed": 0,
+    "total": 256,
+    "errors": 0,
+    "skipped": 0
+  },
+  "command": "Gradle8.9 --offline --no-daemon :app:testDebugUnitTest",
+  "java": "21.0.10",
+  "sdk": 35,
+  "fresh_archive": true,
+  "environment": "Windows; short existing-workspace TEMP needed for native SQLite",
+  "initial_failures": "Missing Temp prevented first build; long Temp caused174 SQLITE_CANTOPEN test failures; source unchanged, short Temp resolves",
+  "ci": "NOT_RUN_ON_CANDIDATE",
+  "device": "NOT_TESTED",
+  "integration": "Repository only; no personal receiver/service activation",
+  "acceptance": "Pending Daily source-bound review; backup2/crash/concurrency/runtime integration remain incomplete",
+  "review_limits": "Read-only assistant review; test coverage review incomplete due output truncation",
+  "created_at_utc": "2026-10-21T10:16:34.3813755Z"
+}
