@@ -249,7 +249,7 @@ class ScopedRecoveryTest {
         assertArrayEquals(before, repo.exportBackup())
     }
 
-    @Test fun actualRestoreRotatesEpochAndPersonalRowsStayPausedUntilExplicitActivation() {
+    @Test fun actualRestoreRotatesEpochAndGenericActivationCannotSchedulePersonalRows() {
         val item = personal()
         val attempt = attempted(item)
         repo.recordSchedulingReceipt(attempt.id, SchedulingOutcome.CALL_RETURNED, SchedulingReason.RETURNED)
@@ -269,11 +269,13 @@ class ScopedRecoveryTest {
             .runBatch().complete)
         assertTrue(calls.isEmpty())
         assertEquals(newEpoch, AtomicRecoveryCursorStore(file).load()!!.epoch)
-        assertTrue(repo.activateRestored(item.id))
+        assertFalse(repo.activateRestored(item.id))
 
         worker(cycle = "explicit-activation", schedule = { calls += it.id }).runBatch()
 
-        assertEquals(listOf(item.id), calls)
+        assertTrue(calls.isEmpty())
+        assertEquals(1, repo.restorePausedCount())
+        assertFalse(repo.isDeliveryAllowed(item.id))
         assertFalse(OccurrenceReconciliation.isObsolete(repo, AlarmDelivery.from(item), scope))
         assertEquals(history, repo.history(item.id))
         assertEquals(attempts, repo.schedulingAttempts(item.id))

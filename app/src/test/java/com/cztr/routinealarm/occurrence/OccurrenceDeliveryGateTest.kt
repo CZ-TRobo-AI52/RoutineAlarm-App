@@ -163,7 +163,7 @@ class OccurrenceDeliveryGateTest {
         }
     }
 
-    @Test fun actualRestoreBlocksPersonalDeliveryUntilActivationAndNeverRevivesOldEpoch() {
+    @Test fun genericActivationCannotReleasePersonalDeliveryOrReviveOldEpoch() {
         val item = personal()
         val oldToken = AlarmDelivery.from(item, repo.deliveryEpoch())
         val backup = repo.exportBackup()
@@ -178,19 +178,21 @@ class OccurrenceDeliveryGateTest {
             assertNull(gate.active(imported))
             assertNull(gate.triggeredResult(imported))
             assertArrayEquals(before, restored.exportBackup())
-            assertTrue(restored.activateRestored(item.id))
+            assertFalse(restored.activateRestored(item.id))
             assertNull(gate.actionTarget(oldToken))
             assertNull(gate.triggerCandidate(oldToken, item.plannedAt))
-            assertEquals(item, gate.triggerCandidate(imported, item.plannedAt))
+            assertNull(gate.triggerCandidate(imported, item.plannedAt))
+            assertEquals(1, restored.restorePausedCount())
+            assertArrayEquals(before, restored.exportBackup())
         }
         SqliteOccurrenceRepository(context, clock, "gate-restored.db").use { restored ->
             assertNull(personalGate(restored).actionTarget(oldToken))
-            assertEquals(item, personalGate(restored).triggerCandidate(
+            assertNull(personalGate(restored).triggerCandidate(
                 AlarmDelivery.from(item, restored.deliveryEpoch()), item.plannedAt))
         }
     }
 
-    @Test fun importedTriggeredPersonalReceiptCannotBecomeActiveBeforeExplicitActivation() {
+    @Test fun genericActivationCannotReleaseImportedTriggeredPersonalReceipt() {
         val planned = personal()
         val fired = apply(planned, ActionType.TRIGGER, planned.plannedAt)
         SqliteOccurrenceRepository(context, clock, "gate-restored.db").use { restored ->
@@ -201,9 +203,10 @@ class OccurrenceDeliveryGateTest {
             assertNull(gate.active(active))
             assertNull(gate.triggeredResult(delivery))
             assertNull(gate.triggerCandidate(delivery, planned.plannedAt.plusSeconds(1)))
-            assertTrue(restored.activateRestored(fired.id))
-            assertEquals(fired, gate.active(active))
-            assertEquals(fired, gate.triggeredResult(delivery))
+            assertFalse(restored.activateRestored(fired.id))
+            assertNull(gate.active(active))
+            assertNull(gate.triggeredResult(delivery))
+            assertEquals(1, restored.restorePausedCount())
         }
     }
 

@@ -4,7 +4,12 @@ Diese vorläufige Debug-App heißt **RoutineAlarm Test** und verwendet
 `com.cztr.routinealarm.dev`. Sie lässt sich neben der bisherigen Release-App
 installieren. Android 8.0 oder neuer ist erforderlich.
 
-Aktueller Entwicklungsstand: `0.2.0-alpha11-test`, Versionscode 13.
+Aktueller Entwicklungsstand: `0.2.0-alpha12-test`, Versionscode 14.
+[Alpha12](ALPHA12.md) beschreibt den begrenzten Zwischenbuild mit Backupformat 2.
+Der Nutzer hat am 21.10.2026 darum gebeten, die Arbeit soweit möglich abzuschließen
+und anschließend auf dem Handy zu testen. Dieser Zwischencheck ersetzt nicht die
+noch offenen Gates des 52-Gate-Plans oder dessen abschließende Geräteabnahme.
+Für Alpha12 liegt noch kein Realgerätetest vor.
 [Alpha11](ALPHA11.md#handyprüfung) prüft Upgrade, Testwecker-Wiederanlauf und
 Importpause nach der Erweiterung des gemeinsamen Kerns.
 Für Alpha11 liegt noch kein Realgerätetest vor. Für Alpha10 meldet der Nutzer

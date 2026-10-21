@@ -143,8 +143,9 @@ class SqliteOccurrenceRepository(
         "SELECT COUNT(*) FROM restored_occurrences", null,
     ).use { it.moveToFirst(); it.getInt(0) }
 
-    /** Explicit activation changes permission, never historical occurrence state or journal evidence. */
+    /** Test-only activation. Imported personal authority needs its separate admission path. */
     fun activateRestored(id: String): Boolean = transaction { db ->
+        if (get(db, id)?.isTest != true) return@transaction false
         db.delete("restored_occurrences", "occurrence_id = ?", arrayOf(id)) == 1
     }
 

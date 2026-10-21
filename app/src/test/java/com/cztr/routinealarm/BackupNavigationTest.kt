@@ -32,7 +32,7 @@ class BackupNavigationTest {
         try {
             awaitUi(activity.get())
             val button = buttons(activity.get().window.decorView)
-                .firstOrNull { it.text == "Testverlauf sichern / laden" }
+                .firstOrNull { it.text == "Ereignisverlauf sichern / laden" }
             assertNotNull("Backup must be reachable from the existing dashboard", button)
             button!!.performClick()
             assertEquals("com.cztr.routinealarm.backup.BackupActivity",

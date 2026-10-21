@@ -116,6 +116,9 @@ class PersonalPlanPersistenceTest {
                 assertEquals(it.schedulingAttempts(item("A").id), restored.schedulingAttempts(item("A").id))
                 assertFalse(restored.isDeliveryAllowed(item("A").id))
                 assertFalse(restored.isDeliveryAllowed(item("B").id))
+                assertFalse(restored.activateRestored(item("B").id))
+                assertFalse(restored.activateRestored(item("A").id))
+                assertEquals(2, restored.restorePausedCount())
                 assertNotEquals(it.deliveryEpoch(), restored.deliveryEpoch())
                 assertArrayEquals(bytes, restored.exportBackup())
             }

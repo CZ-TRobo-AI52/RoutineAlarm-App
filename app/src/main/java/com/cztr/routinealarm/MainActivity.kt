@@ -994,7 +994,7 @@ class MainActivity : Activity() {
             )
         )
 
-        card.addView(secondaryButton("Testverlauf sichern / laden").apply {
+        card.addView(secondaryButton("Ereignisverlauf sichern / laden").apply {
             setOnClickListener { startActivity(Intent(this@MainActivity,
                 com.cztr.routinealarm.backup.BackupActivity::class.java)) }
         })

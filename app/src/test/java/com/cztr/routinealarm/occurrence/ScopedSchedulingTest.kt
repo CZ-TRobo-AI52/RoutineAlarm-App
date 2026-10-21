@@ -276,8 +276,9 @@ class ScopedSchedulingTest {
         SqliteOccurrenceRepository(context, clock, restoredName).use {
             assertEquals(epoch, it.deliveryEpoch())
             assertFalse(it.isDeliveryAllowed(item.id))
-            assertTrue(it.activateRestored(item.id))
-            assertEquals(listOf(item), it.futureOccurrencesPage(scope, clock.instant()))
+            assertFalse(it.activateRestored(item.id))
+            assertTrue(it.futureOccurrencesPage(scope, clock.instant()).isEmpty())
+            assertEquals(1, it.restorePausedCount())
             assertTrue(it.futureTestsPage(clock.instant()).isEmpty())
             assertNull(OccurrenceDeliveryGate(it, scope::accepts).triggerCandidate(AlarmDelivery.from(item), item.currentTriggerAt))
             assertArrayEquals(backup, it.exportBackup())
