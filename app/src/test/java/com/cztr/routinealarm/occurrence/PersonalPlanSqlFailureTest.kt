@@ -44,17 +44,23 @@ class PersonalPlanSqlFailureTest {
     @After fun cleanup() { names.distinct().forEach(context::deleteDatabase) }
 
     /** Install only after normal schema validation; remove before any repository reopen. */
-    private fun inject(name: String, timing: String, operation: String, table: String, work: () -> Unit) {
+    private fun inject(name: String, timing: String, operation: String, table: String, failureRow: Int = 1, work: () -> Unit) {
         SQLiteDatabase.openDatabase(context.getDatabasePath(name).path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            require(failureRow > 0)
+            db.execSQL("CREATE TABLE c6_fault_counter (seen INTEGER NOT NULL)")
+            db.execSQL("INSERT INTO c6_fault_counter VALUES (0)")
             db.execSQL("CREATE TRIGGER c6_injected_failure " + timing + " " + operation + " ON " + table +
-                " BEGIN SELECT RAISE(ABORT, 'C6 injected SQL failure'); END")
+                " BEGIN UPDATE c6_fault_counter SET seen = seen + 1; " +
+                "SELECT CASE WHEN (SELECT seen FROM c6_fault_counter) = " + failureRow +
+                " THEN RAISE(ABORT, 'C6 injected SQL failure row " + failureRow + "') END; END")
             try {
                 val error = assertThrows(timing + " " + operation + " " + table,
                     SQLiteException::class.java) { work() }
                 assertTrue("Must fail at injected SQL statement: " + error,
-                    error.message.orEmpty().contains("C6 injected SQL failure"))
+                    error.message.orEmpty().contains("C6 injected SQL failure row " + failureRow))
             } finally {
                 db.execSQL("DROP TRIGGER c6_injected_failure")
+                db.execSQL("DROP TABLE c6_fault_counter")
             }
         }
     }
@@ -62,15 +68,17 @@ class PersonalPlanSqlFailureTest {
     @Test fun everyReplacementWriteFailurePreservesTheCompletePriorPlan() {
         val tables = listOf("schedule_revisions", "occurrences", "execution_journal",
             "personal_plan_commits", "personal_plan_retirements")
-        for (timing in listOf("BEFORE", "AFTER")) for (table in tables) {
-            val name = database(timing + "-" + table)
+        for (timing in listOf("BEFORE", "AFTER")) for (table in tables)
+            for (failureRow in if (table in setOf("occurrences", "execution_journal", "personal_plan_retirements"))
+                listOf(1, 2) else listOf(1)) {
+            val name = database(timing + "-" + table + "-" + failureRow)
             lateinit var baseline: ByteArray
             repo(name).use { repository ->
                 replace(repository, 0, "PRIOR")
                 replace(repository, 1, "A")
                 repository.beginSchedulingAttempt(items("A").first(), true, scope)
                 baseline = repository.exportBackup()
-                inject(name, timing, "INSERT", table) { replace(repository, 2, "B") }
+                inject(name, timing, "INSERT", table, failureRow) { replace(repository, 2, "B") }
                 assertArrayEquals(baseline, repository.exportBackup())
             }
             repo(name).use { repository ->
@@ -98,12 +106,17 @@ class PersonalPlanSqlFailureTest {
         val writes = listOf("schedule_revisions", "occurrences", "execution_journal", "scheduling_attempts",
             "scheduling_receipts", "personal_plan_commits", "personal_plan_retirements", "restored_occurrences")
             .map { it to "INSERT" } + ("store_metadata" to "UPDATE")
-        for (timing in listOf("BEFORE", "AFTER")) for ((table, operation) in writes) {
-            val name = database("restore-" + timing + "-" + table)
+        for (timing in listOf("BEFORE", "AFTER")) for ((table, operation) in writes)
+            for (failureRow in when (table) {
+                "occurrences", "execution_journal", "restored_occurrences" -> listOf(1, 2, 4)
+                "schedule_revisions", "personal_plan_commits", "personal_plan_retirements" -> listOf(1, 2)
+                else -> listOf(1)
+            }) {
+            val name = database("restore-" + timing + "-" + table + "-" + failureRow)
             lateinit var empty: ByteArray
             repo(name).use { repository ->
                 empty = repository.exportBackup()
-                inject(name, timing, operation, table) { repository.restoreBackup(source) }
+                inject(name, timing, operation, table, failureRow) { repository.restoreBackup(source) }
                 assertArrayEquals(empty, repository.exportBackup())
                 assertEquals("", repository.deliveryEpoch())
                 assertEquals(0, repository.restorePausedCount())

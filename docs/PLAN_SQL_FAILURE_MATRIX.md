@@ -15,3 +15,9 @@ Triggers are installed after the repository has validated and opened its databas
 Validation: 268 tests in 32 suites passed, with no failures, errors or skips. Lint reported 0 errors and 14 existing warnings. The debug APK has the same SHA256 as the delivered Alpha12 APK.
 
 These tests establish normal transaction rollback after first-row statement errors. They do not establish behavior after process termination, power loss, later-row failures or competing writers. Gate 4 remains partial. Dedicated personal activation and device acceptance remain open. There is no production code or schema change in this increment.
+
+## Later-row extension (22 October 2026)
+
+The same fixtures now cover 54 injected errors: the original 30 plus 6 replacement and 18 restore cases at later rows. A transactional test counter selects the second write, and the fourth write for restore occurrences, journal and quarantine. The injected marker names the selected row; earlier rows have passed the trigger before it fails. The counter table is removed with the trigger before reopening the repository. It does not belong to the product schema.
+
+The same snapshot, authority, retirement, epoch, quarantine, unknown-attempt and retry assertions apply. This extends statement-error coverage and does not establish process-termination or power-loss recovery.
