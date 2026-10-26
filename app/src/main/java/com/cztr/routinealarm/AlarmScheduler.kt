@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 
@@ -39,6 +40,7 @@ object AlarmScheduler {
     fun scheduleAll(
         context: Context
     ): Int {
+        cancelIneligibleEvents(context)
         if (!canScheduleExact(context)) {
             return 0
         }
@@ -59,26 +61,34 @@ object AlarmScheduler {
         return scheduled
     }
 
-    fun cancelAll(
-        context: Context
-    ) {
-        val alarmManager =
-            context.getSystemService(
-                Context.ALARM_SERVICE
-            ) as AlarmManager
+    fun cancelAll(context: Context) {
+        cancelEvents(context, ScheduleRegistry.allEvents)
+    }
 
-        ScheduleRegistry.scheduledEvents.forEach { event ->
-            val pendingIntent =
-                eventPendingIntent(
-                    context,
-                    event
-                )
+    fun cancelIneligibleEvents(context: Context) {
+        cancelEvents(context, ScheduleRegistry.allEvents.filter {
+            ScheduleRegistry.scheduledById(it.id)?.enabled != true
+        })
+    }
 
-            alarmManager.cancel(
-                pendingIntent
-            )
-
-            pendingIntent.cancel()
+    private fun cancelEvents(context: Context, events: List<RoutineEvent>) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        events.forEach { event ->
+            try {
+                // Reuse the historical identity without creating a token during cleanup.
+                val intent = Intent(context, AlarmReceiver::class.java).apply {
+                    data = eventUri(event.id)
+                }
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context, 0, intent,
+                    PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+                ) ?: return@forEach
+                alarmManager.cancel(pendingIntent)
+                pendingIntent.cancel()
+            } catch (error: RuntimeException) {
+                // Keep other cleanup/scheduling independent; the receiver also rejects old cues.
+                Log.w("RoutineAlarm", "Alte Alarmregistrierung nicht bestätigt entfernt: " + event.id, error)
+            }
         }
     }
 
@@ -90,6 +100,7 @@ object AlarmScheduler {
     ): Boolean {
         if (
             !event.enabled ||
+            ScheduleRegistry.scheduledById(event.id) != event ||
             !canScheduleExact(context)
         ) {
             return false
@@ -189,6 +200,9 @@ object AlarmScheduler {
         )
     }
 
+    private fun eventUri(eventId: String): Uri =
+        Uri.parse("routinealarm://event/" + Uri.encode(eventId))
+
     private fun eventPendingIntent(
         context: Context,
         event: RoutineEvent
@@ -198,13 +212,7 @@ object AlarmScheduler {
                 context,
                 AlarmReceiver::class.java
             ).apply {
-                data =
-                    Uri.parse(
-                        "routinealarm://event/" +
-                            Uri.encode(
-                                event.id
-                            )
-                    )
+                data = eventUri(event.id)
 
                 putExtra(
                     EXTRA_EVENT_ID,

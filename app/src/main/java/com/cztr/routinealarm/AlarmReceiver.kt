@@ -27,7 +27,7 @@ class AlarmReceiver : BroadcastReceiver() {
                 recurring &&
                 !eventId.isNullOrBlank()
             ) {
-                ScheduleRegistry.byId(
+                ScheduleRegistry.scheduledById(
                     eventId
                 )
             } else {

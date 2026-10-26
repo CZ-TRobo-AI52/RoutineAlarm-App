@@ -44,6 +44,10 @@ object ScheduleRegistry {
         get() =
             scheduledEvents.filter { it.enabled }
 
+    private val scheduledById = scheduledEvents.associateBy { it.id }
+
+    fun scheduledById(id: String): RoutineEvent? = scheduledById[id]
+
     fun byId(id: String): RoutineEvent? =
         allEvents.firstOrNull { it.id == id }
 }
