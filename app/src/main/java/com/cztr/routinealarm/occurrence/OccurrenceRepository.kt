@@ -332,7 +332,9 @@ class SqliteOccurrenceRepository(
             }
         }
         val current = requireNotNull(get(db, action.occurrenceId)) { "Unknown occurrence: ${action.occurrenceId}" }
-        check(!PersonalPlanPersistence.isRetired(db, current.id)) { "This personal occurrence was retired by a newer plan" }
+        // Recheck persisted quarantine and retirement in the same transaction as the write.
+        // Historical replay above remains readable without granting a new execution effect.
+        check(deliveryAllowed(db, current.id)) { "This occurrence is paused after restore or retired by a newer plan" }
         val transition = OccurrenceTransitions.apply(current, action)
         val result = ActionResult(transition.outcome, transition.occurrence, transition.reason)
         if (result.outcome == Outcome.APPLIED) {
