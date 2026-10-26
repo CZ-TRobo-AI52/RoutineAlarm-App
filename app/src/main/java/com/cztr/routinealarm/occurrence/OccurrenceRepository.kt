@@ -108,11 +108,7 @@ class SqliteOccurrenceRepository(
             arrayOf(scope.eventId), null, null, "occurrence_id").use { cursor -> buildList {
             while (cursor.moveToNext()) add(OccurrenceCodec.decode(cursor.getString(0)))
         } }
-        db.rawQuery("""SELECT 1 FROM restored_occurrences r JOIN occurrences o
-            ON r.occurrence_id = o.occurrence_id WHERE o.is_test = 0 AND o.event_id = ? LIMIT 1""",
-            arrayOf(scope.eventId)).use {
-            check(!it.moveToFirst()) { "Restored personal occurrences require separate explicit activation" }
-        }
+        requireNoRestoredPersonalOccurrences(db, scope.eventId)
         val decision = PersonalPlanReplacement.decide(scope, authority, expectedVersion,
             existing, candidates, planRevision, zone, cutoff)
         if (decision is PersonalPlanDecision.Ready && decision.next.version != authority.version) {
@@ -125,6 +121,15 @@ class SqliteOccurrenceRepository(
             PersonalPlanPersistence.commit(db, decision, cutoff, clock.instant())
         }
         decision
+    }
+
+    /** Both initial creation and replacement must respect the persisted event-wide restore pause. */
+    private fun requireNoRestoredPersonalOccurrences(db: SQLiteDatabase, eventId: String) {
+        db.rawQuery("""SELECT 1 FROM restored_occurrences r JOIN occurrences o
+            ON r.occurrence_id = o.occurrence_id WHERE o.is_test = 0 AND o.event_id = ? LIMIT 1""",
+            arrayOf(eventId)).use {
+            check(!it.moveToFirst()) { "Restored personal occurrences require separate explicit activation" }
+        }
     }
 
     fun isPersonalPlanRetired(id: String): Boolean =
@@ -158,8 +163,11 @@ class SqliteOccurrenceRepository(
             if (existing != null) {
                 require(sameIdentity(existing, occurrence)) { "Occurrence ID reused with a different schedule identity" }
             } else {
-                if (!occurrence.isTest) check(PersonalPlanPersistence.read(db, occurrence.eventId).version == 0L) {
-                    "New personal occurrences must use the authoritative replacement transaction"
+                if (!occurrence.isTest) {
+                    check(PersonalPlanPersistence.read(db, occurrence.eventId).version == 0L) {
+                        "New personal occurrences must use the authoritative replacement transaction"
+                    }
+                    requireNoRestoredPersonalOccurrences(db, occurrence.eventId)
                 }
                 db.insertOrThrow("occurrences", null, values(occurrence))
                 journal(
