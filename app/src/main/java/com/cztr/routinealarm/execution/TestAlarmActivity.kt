@@ -122,7 +122,10 @@ class TestAlarmActivity : Activity() {
             root.text("Geplant: ${time.format(active.plannedAt)}\n" +
                 "Ausgelöst: ${time.format(active.lastUpdatedAt)}")
             root.button("Erledigt") { act(expected, ActionType.DONE) }
-            root.button("5 Minuten später") { act(expected, ActionType.SNOOZE) }
+            for (minutes in 1..5) {
+                val label = if (minutes == 1) "1 Minute später" else "$minutes Minuten später"
+                root.button(label) { act(expected, ActionType.SNOOZE, minutes) }
+            }
             root.button("Überspringen") { act(expected, ActionType.SKIP) }
         } else root.text("Die gespeicherte Entscheidung bleibt erhalten.")
         root.button("Testverlauf öffnen") { openHistory() }
@@ -193,10 +196,10 @@ class TestAlarmActivity : Activity() {
             }.show()
     }
 
-    private fun act(expected: AlarmDelivery, type: ActionType) {
+    private fun act(expected: AlarmDelivery, type: ActionType, snoozeMinutes: Int? = null) {
         try {
             val result = TestAlarmRuntime.repository(this).use {
-                TestAlarmRuntime.coordinator(it).act(expected, type, if (type == ActionType.SNOOZE) 5 else null)
+                TestAlarmRuntime.coordinator(it).act(expected, type, snoozeMinutes)
             }
             if (result?.outcome != Outcome.APPLIED) {
                 toast("Testwecker wurde bereits geändert. Bitte aktuellen Verlauf öffnen.")
