@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <full-backup-content>
-    <!-- Execution history and SQLite sidecars stay on this device. Preferences retain their backup behavior. -->
+    <!-- Execution history and scheduling consent stay on this device. Other preferences may transfer. -->
     <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="routinealarm_schedule.xml" />
 </full-backup-content>
