@@ -38,6 +38,7 @@ class AlarmService :
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var hasPayload = false
+    private var currentAdmission: Intent? = null
 
     private var currentTitle =
         "RoutineAlarm"
@@ -59,11 +60,11 @@ class AlarmService :
     private val repeatRunnable =
         object : Runnable {
             override fun run() {
-                speak(
+                if (!speak(
                     currentSpokenText,
                     "routine_repeat_" +
                         System.currentTimeMillis()
-                )
+                )) return
 
                 handler.postDelayed(
                     this,
@@ -111,6 +112,13 @@ class AlarmService :
             stopAlarm()
             return START_NOT_STICKY
         }
+
+        if (!ScheduleState.isDeliveryAllowed(this, intent)) {
+            // An old second start must not cancel a different, still valid alarm.
+            if (!hasPayload || !ScheduleState.isDeliveryAllowed(this, currentAdmission)) stopAlarm()
+            return START_NOT_STICKY
+        }
+        currentAdmission = Intent(intent!!)
 
         currentTitle =
             intent
@@ -249,6 +257,7 @@ class AlarmService :
     }
 
     private fun beginOutput() {
+        if (!ensureCurrentAdmission()) return
         handler.removeCallbacks(
             repeatRunnable
         )
@@ -275,13 +284,21 @@ class AlarmService :
     private fun speak(
         text: String,
         utteranceId: String
-    ) {
+    ): Boolean {
+        if (!ensureCurrentAdmission()) return false
         tts?.speak(
             text,
             TextToSpeech.QUEUE_FLUSH,
             null,
             utteranceId
         )
+        return true
+    }
+
+    private fun ensureCurrentAdmission(): Boolean {
+        if (hasPayload && ScheduleState.isDeliveryAllowed(this, currentAdmission)) return true
+        stopAlarm()
+        return false
     }
 
     private fun startForegroundCompat(
@@ -453,6 +470,8 @@ class AlarmService :
     }
 
     private fun stopAlarm() {
+        hasPayload = false
+        currentAdmission = null
         handler.removeCallbacks(
             repeatRunnable
         )
@@ -467,6 +486,8 @@ class AlarmService :
     }
 
     override fun onDestroy() {
+        hasPayload = false
+        currentAdmission = null
         handler.removeCallbacks(
             repeatRunnable
         )

@@ -11,6 +11,8 @@ class AlarmReceiver : BroadcastReceiver() {
         context: Context,
         intent: Intent
     ) {
+        if (!ScheduleState.isDeliveryAllowed(context, intent)) return
+
         val recurring =
             intent.getBooleanExtra(
                 AlarmScheduler.EXTRA_RECURRING,
@@ -96,6 +98,13 @@ class AlarmReceiver : BroadcastReceiver() {
                 context,
                 AlarmService::class.java
             ).apply {
+                data = intent.data
+                putExtra(AlarmScheduler.EXTRA_RECURRING, recurring)
+                if (intent.hasExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION)) {
+                    putExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION,
+                        intent.getStringExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION))
+                }
+
                 putExtra(
                     AlarmScheduler.EXTRA_EVENT_ID,
                     eventId

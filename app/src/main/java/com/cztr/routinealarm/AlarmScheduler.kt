@@ -18,6 +18,7 @@ object AlarmScheduler {
     const val EXTRA_MODE = "mode"
     const val EXTRA_CATEGORY = "category"
     const val EXTRA_RECURRING = "recurring"
+    const val EXTRA_RESTORE_GENERATION = "restore_generation"
 
     fun canScheduleExact(
         context: Context
@@ -214,6 +215,8 @@ object AlarmScheduler {
             ).apply {
                 data = eventUri(event.id)
 
+                putExtra(EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(context))
+
                 putExtra(
                     EXTRA_EVENT_ID,
                     event.id
@@ -276,6 +279,8 @@ object AlarmScheduler {
                     Uri.parse(
                         intentData
                     )
+
+                putExtra(EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(context))
 
                 putExtra(
                     EXTRA_TITLE,

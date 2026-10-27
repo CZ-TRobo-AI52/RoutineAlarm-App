@@ -76,8 +76,13 @@ class OsRestoreAdmissionTest {
         assertFalse(ScheduleState.isEnabled(context))
         val disk = File(context.applicationInfo.dataDir, "shared_prefs/routinealarm_schedule.xml").readText()
         assertTrue(disk.contains("name=\"weekly_schedule_enabled\" value=\"false\""))
+        val firstGeneration = ScheduleState.restoreGeneration(context)
+        assertTrue(disk.contains(firstGeneration))
         agent().onRestoreFinished()
         assertFalse(ScheduleState.isEnabled(context))
+        assertNotEquals(firstGeneration, ScheduleState.restoreGeneration(context))
+        assertTrue(File(context.applicationInfo.dataDir, "shared_prefs/routinealarm_schedule.xml")
+            .readText().contains(ScheduleState.restoreGeneration(context)))
     }
 
     @Test fun restoredWeeklyPreferenceCannotRearmAtBootOrDispatchStaleRecurringIntent() {
@@ -102,7 +107,16 @@ class OsRestoreAdmissionTest {
         agent().onRestoreFinished()
         assertFalse(ScheduleState.isEnabled(context))
         ScheduleState.setEnabled(context, true)
+        // Re-enabling does not renew a pre-restore delivery. A fresh registration does.
         AlarmReceiver().onReceive(context, recurringIntent())
+        assertNull(shadowOf(context).nextStartedService)
+        val event = PersonalSchedule.allEvents.first { it.enabled }
+        assertTrue(AlarmScheduler.scheduleEvent(context, event))
+        val pending = requireNotNull(shadowOf(manager).scheduledAlarms.single().operation)
+        val freshDelivery = Intent(shadowOf(pending).savedIntent)
+        manager.cancel(pending)
+        assertTrue(shadowOf(manager).scheduledAlarms.isEmpty())
+        AlarmReceiver().onReceive(context, freshDelivery)
         assertNotNull(shadowOf(context).nextStartedService)
         assertTrue(shadowOf(manager).scheduledAlarms.isNotEmpty())
     }
