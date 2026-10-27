@@ -39,6 +39,8 @@ class AlarmService :
     private var ttsReady = false
     private var hasPayload = false
     private var currentAdmission: Intent? = null
+    private var activeAnnouncementId: String? = null
+    private var announcementSequence = 0L
 
     private var currentTitle =
         "RoutineAlarm"
@@ -118,6 +120,7 @@ class AlarmService :
             if (!hasPayload || !ScheduleState.isDeliveryAllowed(this, currentAdmission)) stopAlarm()
             return START_NOT_STICKY
         }
+        activeAnnouncementId = null
         currentAdmission = Intent(intent!!)
 
         currentTitle =
@@ -200,16 +203,7 @@ class AlarmService :
                 override fun onDone(
                     utteranceId: String?
                 ) {
-                    if (
-                        utteranceId
-                            ?.startsWith(
-                                "announcement_once_"
-                            ) == true
-                    ) {
-                        handler.post {
-                            stopAlarm()
-                        }
-                    }
+                    finishAnnouncement(utteranceId)
                 }
 
                 @Deprecated(
@@ -218,7 +212,7 @@ class AlarmService :
                 override fun onError(
                     utteranceId: String?
                 ) {
-                    onSpeechError(
+                    finishAnnouncement(
                         utteranceId
                     )
                 }
@@ -227,7 +221,7 @@ class AlarmService :
                     utteranceId: String?,
                     errorCode: Int
                 ) {
-                    onSpeechError(
+                    finishAnnouncement(
                         utteranceId
                     )
                 }
@@ -241,16 +235,14 @@ class AlarmService :
         }
     }
 
-    private fun onSpeechError(
+    private fun finishAnnouncement(
         utteranceId: String?
     ) {
-        if (
-            utteranceId
-                ?.startsWith(
-                    "announcement_once_"
-                ) == true
-        ) {
-            handler.post {
+        if (utteranceId == null) return
+        // TTS callbacks may arrive on another thread or wait behind a replacement start.
+        // Compare on the main Handler, immediately before stopping the current output.
+        handler.post {
+            if (hasPayload && utteranceId == activeAnnouncementId) {
                 stopAlarm()
             }
         }
@@ -262,6 +254,7 @@ class AlarmService :
             repeatRunnable
         )
 
+        activeAnnouncementId = null
         tts?.stop()
 
         when (currentMode) {
@@ -272,10 +265,11 @@ class AlarmService :
             }
 
             EventMode.ANNOUNCEMENT -> {
+                val utteranceId = "announcement_once_${++announcementSequence}"
+                activeAnnouncementId = utteranceId
                 speak(
                     currentSpokenText,
-                    "announcement_once_" +
-                        System.currentTimeMillis()
+                    utteranceId
                 )
             }
         }
@@ -472,6 +466,7 @@ class AlarmService :
     private fun stopAlarm() {
         hasPayload = false
         currentAdmission = null
+        activeAnnouncementId = null
         handler.removeCallbacks(
             repeatRunnable
         )
@@ -488,6 +483,7 @@ class AlarmService :
     override fun onDestroy() {
         hasPayload = false
         currentAdmission = null
+        activeAnnouncementId = null
         handler.removeCallbacks(
             repeatRunnable
         )

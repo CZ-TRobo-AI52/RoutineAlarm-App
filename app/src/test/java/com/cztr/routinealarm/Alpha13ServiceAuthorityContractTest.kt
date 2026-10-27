@@ -40,9 +40,11 @@ class Alpha13ServiceAuthorityContractTest {
     @Implements(TextToSpeech::class)
     class ObservedSpeech : ShadowTextToSpeech() {
         val spoken = mutableListOf<String>()
+        val utteranceIds = mutableListOf<String?>()
         @Implementation
         override fun speak(text: CharSequence, queueMode: Int, params: Bundle?, utteranceId: String?): Int {
             spoken += text.toString()
+            utteranceIds += utteranceId
             return super.speak(text, queueMode, params, null)
         }
     }
@@ -70,16 +72,19 @@ class Alpha13ServiceAuthorityContractTest {
             .edit().clear().commit())
     }
 
-    private fun capturedDelivery(recurring: Boolean = false): Intent {
+    private fun capturedDelivery(recurring: Boolean = false, mode: EventMode? = null): Intent {
         if (recurring) {
             val event = ScheduleRegistry.enabledEvents.first {
-                !TrainingSessionPlan.isStartEvent(it.id)
+                !TrainingSessionPlan.isStartEvent(it.id) && (mode == null || it.mode == mode)
             }
             assertTrue(AlarmScheduler.scheduleEvent(context, event))
         } else {
             AlarmScheduler.scheduleSnooze(context, "Synthetic final fence", "Synthetic final speech")
         }
-        val pending = requireNotNull(shadowOf(manager).scheduledAlarms.single().operation)
+        val pending = requireNotNull(shadowOf(manager).scheduledAlarms.single {
+            shadowOf(requireNotNull(it.operation)).savedIntent
+                .getBooleanExtra(AlarmScheduler.EXTRA_RECURRING, false) == recurring
+        }.operation)
         val intent = Intent(shadowOf(pending).savedIntent)
         assertEquals(recurring, intent.getBooleanExtra(AlarmScheduler.EXTRA_RECURRING, false))
         manager.cancel(pending)
@@ -235,5 +240,101 @@ class Alpha13ServiceAuthorityContractTest {
         speechReady()
         assertTrue(speech.spoken.isEmpty())
         assertStoppedWithoutNotification()
+    }
+
+    private fun startAnnouncement(): String {
+        val admitted = receiverAdmits(capturedDelivery(recurring = true, mode = EventMode.ANNOUNCEMENT))
+        if (controller == null) {
+            createService()
+            service.onStartCommand(admitted, 0, 1)
+            speechReady()
+        } else {
+            service.onStartCommand(admitted, 0, 2)
+            shadowOf(Looper.getMainLooper()).idle()
+        }
+        return requireNotNull(speech.utteranceIds.last())
+    }
+
+    private fun startFreshSnoozeAfterRestore() {
+        restoreFinished()
+        service.onStartCommand(receiverAdmits(capturedDelivery()), 0, 2)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals("Synthetic final speech", speech.spoken.last())
+    }
+
+    private fun assertCurrentOutputStillActive() {
+        shadowOf(Looper.getMainLooper()).idle()
+        assertFalse("Historical TTS callback stopped the current payload", shadowOf(service).isStoppedBySelf)
+        assertTrue(context.getSystemService(NotificationManager::class.java).activeNotifications
+            .any { it.id == AlarmService.NOTIFICATION_ID })
+    }
+
+    @Test fun oldAnnouncementDoneAfterRestoreMustNotStopFreshSnooze() {
+        val oldId = startAnnouncement()
+        startFreshSnoozeAfterRestore()
+        speech.utteranceProgressListener.onDone(oldId)
+        assertCurrentOutputStillActive()
+        val before = speech.spoken.size
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(8))
+        assertEquals(before + 1, speech.spoken.size)
+    }
+
+    @Test fun oldAnnouncementErrorAfterRestoreMustNotStopFreshSnooze() {
+        val oldId = startAnnouncement()
+        startFreshSnoozeAfterRestore()
+        speech.utteranceProgressListener.onError(oldId)
+        assertCurrentOutputStillActive()
+    }
+
+    @Test fun oldDetailedErrorAfterRestoreMustNotStopFreshSnooze() {
+        val oldId = startAnnouncement()
+        startFreshSnoozeAfterRestore()
+        speech.utteranceProgressListener.onError(oldId, TextToSpeech.ERROR)
+        assertCurrentOutputStillActive()
+    }
+
+    @Test fun completionQueuedBeforeReplacementMustRecheckOnHandlerExecution() {
+        val oldId = startAnnouncement()
+        speech.utteranceProgressListener.onDone(oldId)
+        // Do not drain the Handler between callback receipt and replacement admission.
+        restoreFinished()
+        service.onStartCommand(receiverAdmits(capturedDelivery()), 0, 2)
+        assertCurrentOutputStillActive()
+    }
+
+    @Test fun oldCompletionMustNotStopReplacementAnnouncement() {
+        val oldId = startAnnouncement()
+        val currentId = startAnnouncement()
+        assertNotEquals("Every announcement needs an individual callback identity", oldId, currentId)
+        speech.utteranceProgressListener.onDone(oldId)
+        assertCurrentOutputStillActive()
+        speech.utteranceProgressListener.onDone(currentId)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertStoppedWithoutNotification()
+    }
+
+    @Test fun currentAnnouncementDoneMustStillStopItsOutput() {
+        speechReadyAfterAnnouncementDone(false)
+    }
+
+    @Test fun currentAnnouncementErrorMustStillStopItsOutput() {
+        speechReadyAfterAnnouncementDone(true)
+    }
+
+    private fun speechReadyAfterAnnouncementDone(error: Boolean) {
+        val id = startAnnouncement()
+        if (error) speech.utteranceProgressListener.onError(id, TextToSpeech.ERROR)
+        else speech.utteranceProgressListener.onDone(id)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertStoppedWithoutNotification()
+    }
+
+    @Test fun nullOrUnknownCallbackMustNotStopCurrentAnnouncement() {
+        startAnnouncement()
+        speech.utteranceProgressListener.onDone(null)
+        speech.utteranceProgressListener.onError(null)
+        speech.utteranceProgressListener.onDone("announcement_once_unknown")
+        speech.utteranceProgressListener.onError("announcement_once_unknown", TextToSpeech.ERROR)
+        assertCurrentOutputStillActive()
     }
 }
