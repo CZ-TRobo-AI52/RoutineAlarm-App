@@ -314,7 +314,30 @@ class SqliteOccurrenceRepository(
         } }
     }
 
-    override fun apply(action: ExecutionAction): ActionResult = transaction { db ->
+    /** Read only the exact committed action; internal SCHEDULE rows have no action snapshot. */
+    internal fun recordedAction(id: String): ExecutionAction? = helper.readableDatabase.query(
+        "execution_journal", arrayOf("action_snapshot"), "action_id = ?", arrayOf(id), null, null, null,
+    ).use { cursor ->
+        if (cursor.moveToFirst() && !cursor.isNull(0)) OccurrenceCodec.decodeAction(cursor.getString(0)) else null
+    }
+
+    /** Atomic current admission plus the existing action/journal transaction; test scope only. */
+    internal fun applyTestUserAction(action: ExecutionAction): ActionResult {
+        val originalEpoch = StableTestAlarmActions.epoch(action)
+        return applyAction(action) { db ->
+            val currentEpoch = db.rawQuery(
+                "SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null,
+            ).use { check(it.moveToFirst()); it.getString(0) }
+            check(originalEpoch == currentEpoch) { "Stale delivery epoch" }
+            check(get(db, action.occurrenceId)?.isTest == true) { "Test scope required" }
+            check(deliveryAllowed(db, action.occurrenceId)) { "Occurrence paused or retired" }
+        }
+    }
+
+    override fun apply(action: ExecutionAction): ActionResult = applyAction(action)
+
+    private fun applyAction(action: ExecutionAction, admission: (SQLiteDatabase) -> Unit = {}): ActionResult = transaction { db ->
+        admission(db)
         // Structural errors cannot enter the journal: otherwise an external action
         // could reserve the internal SCHEDULE key of a future occurrence.
         require(action.id.isNotBlank() && !action.id.startsWith("schedule:")) {

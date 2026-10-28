@@ -17,11 +17,28 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 class AlarmActivity : Activity() {
+    private var preparedSnooze: AlarmScheduler.PreparedSnooze? = null
+    private var invalidSavedSnooze = false
+    private lateinit var originalAdmission: Intent
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (invalidSavedSnooze) outState.putBundle("prepared_snooze", Bundle())
+        preparedSnooze?.let { outState.putBundle("prepared_snooze", it.toBundle()) }
+        super.onSaveInstanceState(outState)
+    }
+
 
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
         super.onCreate(savedInstanceState)
+        originalAdmission = Intent(intent)
+        if (savedInstanceState?.containsKey("prepared_snooze") == true) {
+            preparedSnooze = savedInstanceState.getBundle("prepared_snooze")?.let {
+                AlarmScheduler.PreparedSnooze.fromBundle(it)
+            }
+            invalidSavedSnooze = preparedSnooze == null
+        }
 
         window.addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
@@ -275,16 +292,17 @@ class AlarmActivity : Activity() {
                 primary = false
             ).apply {
                 setOnClickListener {
-                    AlarmScheduler.scheduleSnooze(
-                        context =
-                            this@AlarmActivity,
-                        title =
-                            title,
-                        spokenText =
-                            spokenText,
-                        minutes =
-                            5
-                    )
+                    if (invalidSavedSnooze || !ScheduleState.isDeliveryAllowed(this@AlarmActivity, originalAdmission)) {
+                        finish()
+                        return@setOnClickListener
+                    }
+                    val request = preparedSnooze ?: AlarmScheduler.prepareSnooze(
+                        this@AlarmActivity, title, spokenText, 5, originalAdmission
+                    )?.also { preparedSnooze = it } ?: return@setOnClickListener
+                    // On an exception, effect is unknown: retain the exact request for a retry.
+                    val submitted = runCatching { AlarmScheduler.submitSnooze(this@AlarmActivity, request) }
+                        .getOrDefault(false)
+                    if (!submitted) return@setOnClickListener
 
                     stopAlarm()
                     finish()
@@ -437,6 +455,8 @@ class AlarmActivity : Activity() {
             ).apply {
                 action =
                     AlarmService.ACTION_STOP
+                putExtra(AlarmService.EXTRA_OUTPUT_INSTANCE,
+                    originalAdmission.getStringExtra(AlarmService.EXTRA_OUTPUT_INSTANCE))
             }
 
         startService(

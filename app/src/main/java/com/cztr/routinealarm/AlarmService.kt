@@ -10,6 +10,8 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.os.Build
+import android.net.Uri
+import java.util.UUID
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -31,6 +33,8 @@ class AlarmService :
         const val NOTIFICATION_ID =
             1001
 
+        const val EXTRA_OUTPUT_INSTANCE = "alarm_output_instance"
+
         const val ACTION_STOP =
             "com.cztr.routinealarm.STOP"
     }
@@ -39,6 +43,7 @@ class AlarmService :
     private var ttsReady = false
     private var hasPayload = false
     private var currentAdmission: Intent? = null
+    private var activeOutputInstance: String? = null
     private var activeAnnouncementId: String? = null
     private var announcementSequence = 0L
 
@@ -111,7 +116,11 @@ class AlarmService :
             intent?.action ==
             ACTION_STOP
         ) {
-            stopAlarm()
+            // A close request owns one output instance, never the next accepted start.
+            val requestedInstance = intent.getStringExtra(EXTRA_OUTPUT_INSTANCE)
+            if (!hasPayload || (requestedInstance != null && requestedInstance == activeOutputInstance)) {
+                stopAlarm()
+            }
             return START_NOT_STICKY
         }
 
@@ -122,6 +131,7 @@ class AlarmService :
         }
         activeAnnouncementId = null
         currentAdmission = Intent(intent!!)
+        activeOutputInstance = UUID.randomUUID().toString()
 
         currentTitle =
             intent
@@ -360,6 +370,13 @@ class AlarmService :
                     this,
                     AlarmActivity::class.java
                 ).apply {
+                    // Carry the original authority into the screen; a later click cannot renew it.
+                    currentAdmission?.let { admission ->
+                        admission.extras?.let { putExtras(it) }
+                        // Separate PendingIntent identity prevents UPDATE_CURRENT from upgrading an old handle.
+                        data = Uri.parse("routinealarm://alarm-output/$activeOutputInstance")
+                        putExtra(EXTRA_OUTPUT_INSTANCE, activeOutputInstance)
+                    }
                     putExtra(
                         AlarmScheduler.EXTRA_TITLE,
                         title
@@ -466,6 +483,7 @@ class AlarmService :
     private fun stopAlarm() {
         hasPayload = false
         currentAdmission = null
+        activeOutputInstance = null
         activeAnnouncementId = null
         handler.removeCallbacks(
             repeatRunnable
@@ -483,6 +501,7 @@ class AlarmService :
     override fun onDestroy() {
         hasPayload = false
         currentAdmission = null
+        activeOutputInstance = null
         activeAnnouncementId = null
         handler.removeCallbacks(
             repeatRunnable

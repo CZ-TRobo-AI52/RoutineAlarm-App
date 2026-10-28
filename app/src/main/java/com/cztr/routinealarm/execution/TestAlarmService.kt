@@ -19,6 +19,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
     }
     private val handler = Handler(Looper.getMainLooper())
     private var tts: TextToSpeech? = null
+    private var destroyed = false
     private var ready = false
     private var current: AlarmDelivery? = null
     private var wakeLock: PowerManager.WakeLock? = null
@@ -67,6 +68,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun refreshOutput(speakNow: Boolean) {
+        if (destroyed) return
         handler.removeCallbacks(repeat)
         try {
             val selected = TestAlarmRuntime.repository(this).use { repo ->
@@ -109,6 +111,16 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
     }
 
     override fun onInit(status: Int) {
+        // Serialize TTS callbacks with service teardown and scheduled output.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post { initializeSpeech(status) }
+        } else {
+            initializeSpeech(status)
+        }
+    }
+
+    private fun initializeSpeech(status: Int) {
+        if (destroyed) return
         if (status == TextToSpeech.SUCCESS) {
             val language = tts?.setLanguage(Locale.GERMAN)
             ready = language != null && language >= TextToSpeech.LANG_AVAILABLE
@@ -133,7 +145,10 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
     }
 
     override fun onDestroy() {
-        handler.removeCallbacks(repeat)
+        destroyed = true
+        ready = false
+        current = null
+        handler.removeCallbacksAndMessages(null)
         tts?.stop()
         tts?.shutdown()
         wakeLock?.takeIf { it.isHeld }?.release()

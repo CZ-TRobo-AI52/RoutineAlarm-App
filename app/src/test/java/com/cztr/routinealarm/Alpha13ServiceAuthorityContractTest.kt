@@ -206,7 +206,12 @@ class Alpha13ServiceAuthorityContractTest {
         val admitted = receiverAdmits(capturedDelivery())
         createService()
         service.onStartCommand(admitted, 0, 1)
-        service.onStartCommand(Intent(context, AlarmService::class.java).setAction(AlarmService.ACTION_STOP), 0, 2)
+        val output = shadowOf(context.getSystemService(NotificationManager::class.java))
+            .getNotification(AlarmService.NOTIFICATION_ID).fullScreenIntent
+        val instance = shadowOf(output).savedIntent.getStringExtra(AlarmService.EXTRA_OUTPUT_INSTANCE)
+        assertNotNull(instance)
+        service.onStartCommand(Intent(context, AlarmService::class.java).setAction(AlarmService.ACTION_STOP)
+            .putExtra(AlarmService.EXTRA_OUTPUT_INSTANCE, instance), 0, 2)
         speechReady()
         assertTrue(speech.spoken.isEmpty())
         assertTrue(shadowOf(service).isStoppedBySelf)

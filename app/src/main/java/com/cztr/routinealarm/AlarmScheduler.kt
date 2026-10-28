@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import java.util.UUID
 import android.util.Log
 import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
@@ -178,27 +180,65 @@ object AlarmScheduler {
         com.cztr.routinealarm.execution.TestAlarmRuntime.create(context, minutes)
     }
 
-    fun scheduleSnooze(
-        context: Context,
-        title: String,
-        spokenText: String = title,
-        minutes: Int = 5
+    /** One preparation is one logical request; retries must reuse this immutable value. */
+    class PreparedSnooze private constructor(
+        val requestId: String,
+        val triggerAtMillis: Long,
+        val title: String,
+        val spokenText: String,
+        val restoreGeneration: String
     ) {
-        val triggerTime =
-            System.currentTimeMillis() +
-                TimeUnit.MINUTES.toMillis(
-                    minutes.toLong()
-                )
+        fun toBundle(): Bundle = Bundle().apply {
+            putString("id", requestId)
+            putLong("at", triggerAtMillis)
+            putString("title", title)
+            putString("speech", spokenText)
+            putString("generation", restoreGeneration)
+        }
+        companion object {
+            internal fun prepare(title: String, speech: String, minutes: Int, generation: String): PreparedSnooze {
+                require(minutes in 1..5)
+                return PreparedSnooze(UUID.randomUUID().toString(),
+                    System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(minutes.toLong()),
+                    title, speech, generation)
+            }
+            /** Framework saved state only, not imported plan/restore authority. */
+            fun fromBundle(saved: Bundle): PreparedSnooze? {
+                val id = saved.getString("id") ?: return null
+                if (runCatching { UUID.fromString(id).toString() }.getOrNull() != id) return null
+                val at = saved.getLong("at", -1L)
+                if (at <= 0L) return null
+                val title = saved.getString("title") ?: return null
+                val speech = saved.getString("speech") ?: return null
+                val generation = saved.getString("generation")?.takeIf { it.isNotBlank() } ?: return null
+                return PreparedSnooze(id, at, title, speech, generation)
+            }
+        }
+    }
 
-        scheduleOneShot(
-            context = context,
-            intentData =
-                "routinealarm://snooze/${System.currentTimeMillis()}",
-            title = title,
-            spokenText = spokenText,
-            mode = EventMode.ROUTINE,
-            triggerTime = triggerTime
-        )
+    fun prepareSnooze(
+        context: Context, title: String, spokenText: String = title, minutes: Int = 5,
+        admission: Intent? = null
+    ): PreparedSnooze? {
+        // Capture first. A concurrent restore must never promote an old request to its new epoch.
+        val generation = if (admission == null) ScheduleState.restoreGeneration(context)
+            else admission.getStringExtra(EXTRA_RESTORE_GENERATION) ?: "before-first-restore"
+        if (admission != null && !ScheduleState.isDeliveryAllowed(context, admission)) return null
+        return PreparedSnooze.prepare(title, spokenText, minutes, generation)
+    }
+
+    /** True means scheduling API returned, not a delivery/receipt or durable exactly-once claim. */
+    fun submitSnooze(context: Context, request: PreparedSnooze): Boolean {
+        if (request.restoreGeneration != ScheduleState.restoreGeneration(context) ||
+            request.triggerAtMillis <= System.currentTimeMillis()) return false
+        scheduleOneShot(context, "routinealarm://snooze/${request.requestId}", request.title,
+            request.spokenText, EventMode.ROUTINE, request.triggerAtMillis, request.restoreGeneration)
+        return true
+    }
+
+    /** Each call is a new request. Retry callers use prepareSnooze / submitSnooze instead. */
+    fun scheduleSnooze(context: Context, title: String, spokenText: String = title, minutes: Int = 5) {
+        submitSnooze(context, requireNotNull(prepareSnooze(context, title, spokenText, minutes)))
     }
 
     private fun eventUri(eventId: String): Uri =
@@ -263,7 +303,8 @@ object AlarmScheduler {
         title: String,
         spokenText: String,
         mode: EventMode,
-        triggerTime: Long
+        triggerTime: Long,
+        restoreGeneration: String
     ) {
         val alarmManager =
             context.getSystemService(
@@ -280,7 +321,7 @@ object AlarmScheduler {
                         intentData
                     )
 
-                putExtra(EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(context))
+                putExtra(EXTRA_RESTORE_GENERATION, restoreGeneration)
 
                 putExtra(
                     EXTRA_TITLE,
