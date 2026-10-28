@@ -2,6 +2,18 @@
 
 Native Android-App für Routinen, Wecker und gesprochene Erinnerungen.
 
+## Aktuell: Alpha14-Testrelease
+
+Testpaket `com.cztr.routinealarm.dev`, interne Version `0.2.0-alpha14-test`, VersionCode **16**.
+Alpha14 integriert die geprüften Action-/Request-, Replay- und Output-Schutzverträge in einer gemeinsamen Quelllinie. Die vorhandenen Testalarm- und Wochenroutinen bleiben nutzbar.
+
+Die neue Notification-Adapter-Schicht ist noch kein angeschlossener Produktconsumer. Dauerhafte CloseRequest/Attempt/Ack-Recovery und die vollständige persönliche Occurrence-Migration sind nicht Bestandteil dieses Testrelease. Der Release enthält keine neue Engine und keinen zweiten Store.
+
+- [Alpha14: Umfang und Grenzen](docs/ALPHA14.md)
+- [Alpha14: Geräteprüfplan](docs/PHONE_TEST_ALPHA14.md)
+
+Die bisherige Geräteabnahme älterer Versionen gilt nicht für Alpha14. Die Release-Artefakte enthalten die tatsächlich ausgeführten Test-, CI- und Signaturnachweise.
+
 ## Alpha11: Gemeinsame Planungsbelege und begrenzter Wiederanlauf
 
 Entwicklungsstand `0.2.0-alpha11-test`, Versionscode **13**, Paket `com.cztr.routinealarm.dev`.
