@@ -106,18 +106,13 @@ class MainActivity : Activity() {
         addHeader(root)
         when (navigation.destination) {
             AppDestination.TODAY -> {
-                val hour = ZonedDateTime.now().hour
-                root.addView(primaryText(when (hour) {
-                    in 5..10 -> "Guten Morgen, Christian"
-                    in 11..17 -> "Guten Tag, Christian"
-                    else -> "Guten Abend, Christian"
-                }))
-                root.addView(secondaryText("Dein nächster Schritt, auf einen Blick."), spacedMatchWidth())
-                addNextRoutineCard(root)
+                val home = com.cztr.routinealarm.ui.home.HomeUiMapper.map(
+                    ZonedDateTime.now(), ScheduleState.isEnabled(this),
+                    AlarmScheduler.canScheduleExact(this), ScheduleRegistry.scheduledEvents)
+                root.addView(com.cztr.routinealarm.ui.home.HomeScreenView(this, home, colors,
+                    onOpenPlan = { navigation.destination = AppDestination.PLAN; render() },
+                    onOpenSystem = { navigation.destination = AppDestination.MORE; render() }))
                 addTestAlarmCard(root)
-                root.addView(secondaryButton("Plan ansehen").apply {
-                    setOnClickListener { navigation.destination = AppDestination.PLAN; render() }
-                })
             }
             AppDestination.PLAN -> {
                 addScheduleToggleCard(root)
@@ -286,100 +281,6 @@ class MainActivity : Activity() {
 
     private fun openTestHistory() {
         startActivity(Intent(this, com.cztr.routinealarm.execution.TestAlarmActivity::class.java))
-    }
-
-    private fun addNextRoutineCard(
-        root: LinearLayout
-    ) {
-        val card = cardContainer()
-
-        card.addView(
-            sectionLabel("NÄCHSTE ROUTINE")
-        )
-
-        if (!ScheduleState.isEnabled(this)) {
-            card.addView(
-                primaryText("Wochenplan pausiert")
-            )
-
-            card.addView(
-                secondaryText(
-                    "Aktiviere den Wochenplan, damit Routinen automatisch ausgeführt werden."
-                )
-            )
-        } else {
-            val now = ZonedDateTime.now()
-
-            val next =
-                ScheduleRegistry
-                    .enabledEvents
-                    .map { event ->
-                        event to
-                            AlarmScheduler.nextOccurrence(
-                                event,
-                                now
-                            )
-                    }
-                    .minByOrNull {
-                        it.second.toInstant()
-                    }
-
-            if (next == null) {
-                card.addView(
-                    primaryText(
-                        "Keine nächste Routine gefunden"
-                    )
-                )
-            } else {
-                val (event, occurrence) = next
-
-                card.addView(
-                    primaryText(event.title)
-                )
-
-                val dayText =
-                    if (
-                        occurrence.toLocalDate() ==
-                        now.toLocalDate()
-                    ) {
-                        "Heute"
-                    } else {
-                        occurrence.dayOfWeek
-                            .getDisplayName(
-                                TextStyle.FULL,
-                                german
-                            )
-                            .replaceFirstChar {
-                                it.titlecase(german)
-                            }
-                    }
-
-                val time =
-                    String.format(
-                        german,
-                        "%02d:%02d",
-                        occurrence.hour,
-                        occurrence.minute
-                    )
-
-                card.addView(
-                    secondaryText(
-                        "$dayText · $time Uhr · ${countdown(now, occurrence)}"
-                    )
-                )
-
-                card.addView(
-                    smallBadge(
-                        categoryName(event.category)
-                    )
-                )
-            }
-        }
-
-        root.addView(
-            card,
-            spacedMatchWidth()
-        )
     }
 
     private fun addScheduleToggleCard(
