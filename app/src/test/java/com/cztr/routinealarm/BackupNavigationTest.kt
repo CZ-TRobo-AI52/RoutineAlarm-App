@@ -31,9 +31,12 @@ class BackupNavigationTest {
         val activity = Robolectric.buildActivity(MainActivity::class.java).create()
         try {
             awaitUi(activity.get())
+            // The user-approved five-destination shell groups system tools under More.
+            buttons(activity.get().window.decorView).single { it.contentDescription == "Mehr öffnen" }.performClick()
+            assertNull("Navigation alone must not start backup", shadowOf(activity.get()).nextStartedActivity)
             val button = buttons(activity.get().window.decorView)
                 .firstOrNull { it.text == "Ereignisverlauf sichern / laden" }
-            assertNotNull("Backup must be reachable from the existing dashboard", button)
+            assertNotNull("Backup must be reachable through the dashboard More destination", button)
             button!!.performClick()
             assertEquals("com.cztr.routinealarm.backup.BackupActivity",
                 shadowOf(activity.get()).nextStartedActivity.component!!.className)

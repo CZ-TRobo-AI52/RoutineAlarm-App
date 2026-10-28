@@ -1,5 +1,8 @@
 package com.cztr.routinealarm
 
+import com.cztr.routinealarm.ui.design.*
+import com.cztr.routinealarm.ui.components.*
+import com.cztr.routinealarm.ui.shell.*
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
@@ -32,6 +35,9 @@ import java.util.Locale
 
 class MainActivity : Activity() {
 
+    private var navigation = AppNavigationState()
+    private val colors get() = navigation.colors(resources.configuration)
+
     private val german = Locale.GERMAN
     private val testStatusLoader = com.cztr.routinealarm.execution.LatestUiLoader()
 
@@ -44,7 +50,26 @@ class MainActivity : Activity() {
         savedInstanceState: Bundle?
     ) {
         super.onCreate(savedInstanceState)
+        navigation = AppNavigationState.restore(savedInstanceState)
+        selectedDay = savedInstanceState?.getInt("r52_selected_day")?.takeIf { it in 1..7 }
+            ?.let(DayOfWeek::of) ?: selectedDay
+        showTrainingDetails = savedInstanceState?.getBoolean("r52_training_details") ?: false
         render()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        navigation.save(outState)
+        outState.putInt("r52_selected_day", selectedDay.value)
+        outState.putBoolean("r52_training_details", showTrainingDetails)
+        super.onSaveInstanceState(outState)
+    }
+
+    @Deprecated("Platform back navigation")
+    override fun onBackPressed() {
+        if (navigation.destination != AppDestination.TODAY) {
+            navigation.destination = AppDestination.TODAY
+            render()
+        } else super.onBackPressed()
     }
 
     override fun onResume() {
@@ -73,38 +98,74 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        val scroll =
-            ScrollView(this).apply {
-                isFillViewport = true
-                setBackgroundColor(
-                    Color.rgb(246, 247, 249)
-                )
-            }
-
-        val root =
-            LinearLayout(this).apply {
-                orientation =
-                    LinearLayout.VERTICAL
-
-                setPadding(
-                    dp(20),
-                    dp(28),
-                    dp(20),
-                    dp(40)
-                )
-            }
-
+        testStatusLoader.invalidate()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(24), dp(20), dp(24))
+        }
         addHeader(root)
-        addTestAlarmCard(root)
-        addNextRoutineCard(root)
-        addScheduleToggleCard(root)
-        addDaySelector(root)
-        addDaySchedule(root)
-        addTrainingCard(root)
-        addSystemCard(root)
-
-        scroll.addView(root)
-        setContentView(scroll)
+        when (navigation.destination) {
+            AppDestination.TODAY -> {
+                val hour = ZonedDateTime.now().hour
+                root.addView(primaryText(when (hour) {
+                    in 5..10 -> "Guten Morgen, Christian"
+                    in 11..17 -> "Guten Tag, Christian"
+                    else -> "Guten Abend, Christian"
+                }))
+                root.addView(secondaryText("Dein nächster Schritt, auf einen Blick."), spacedMatchWidth())
+                addNextRoutineCard(root)
+                addTestAlarmCard(root)
+                root.addView(secondaryButton("Plan ansehen").apply {
+                    setOnClickListener { navigation.destination = AppDestination.PLAN; render() }
+                })
+            }
+            AppDestination.PLAN -> {
+                addScheduleToggleCard(root)
+                addDaySelector(root)
+                addDaySchedule(root)
+                addTrainingCard(root)
+            }
+            AppDestination.STUDIO -> {
+                root.addView(sectionTitle("Deine Routinen"))
+                root.addView(secondaryText("Bestehende Routinen im Wochenplan. Ein frei bearbeitbarer Editor ist noch nicht verfügbar."))
+                val card = cardContainer(0)
+                PersonalSchedule.allEvents.forEach { event ->
+                    card.addView(eventRow(event))
+                    card.addView(secondaryText(if (event.enabled) "Im Plan enthalten" else "Im Plan deaktiviert"))
+                    card.addView(divider())
+                }
+                root.addView(card, spacedMatchWidth())
+            }
+            AppDestination.HISTORY -> {
+                root.addView(sectionTitle("Gespeicherte Entscheidungen"))
+                root.addView(secondaryText("Der Testverlauf zeigt gespeicherte Auslösungen, Entscheidungen und Planungsrückmeldungen. Eine gespeicherte Auslösung bestätigt keine hörbare Ausgabe."))
+                root.addView(secondaryButton("Testverlauf öffnen").apply { setOnClickListener { openTestHistory() } })
+            }
+            AppDestination.MORE -> {
+                addSystemCard(root)
+                root.addView(sectionTitle("Darstellung"))
+                listOf("Dunkles Design" to ThemeChoice.DARK, "Helles Design" to ThemeChoice.LIGHT,
+                    "Systemdesign" to ThemeChoice.SYSTEM).forEach { (label, choice) ->
+                    root.addView(secondaryButton(label).apply {
+                        isSelected = navigation.theme == choice
+                        setOnClickListener { navigation.theme = choice; render() }
+                    }, spacedMatchWidth())
+                }
+                root.addView(sectionTitle("Buildinfo"))
+                @Suppress("DEPRECATION")
+                val info = packageManager.getPackageInfo(packageName, 0)
+                root.addView(secondaryText("${info.versionName} · $packageName"))
+            }
+        }
+        window.statusBarColor = colors.background
+        window.navigationBarColor = colors.surface
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = if (colors == R52Colors.Light)
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else 0
+        setContentView(AppShellView(this, navigation.destination, colors, root) { target ->
+            navigation.destination = target
+            render()
+        })
     }
 
     private fun addHeader(
@@ -112,11 +173,11 @@ class MainActivity : Activity() {
     ) {
         val title =
             TextView(this).apply {
-                text = "RoutineAlarm"
+                text = if (navigation.destination == AppDestination.TODAY) "RoutineAlarm" else navigation.destination.label
                 textSize = 30f
 
                 setTextColor(
-                    Color.rgb(24, 27, 32)
+                    colors.text
                 )
 
                 setTypeface(
@@ -147,7 +208,7 @@ class MainActivity : Activity() {
                 textSize = 16f
 
                 setTextColor(
-                    Color.rgb(100, 105, 114)
+                    colors.secondaryText
                 )
 
                 setPadding(
@@ -347,7 +408,7 @@ class MainActivity : Activity() {
                 textSize = 19f
 
                 setTextColor(
-                    Color.rgb(24, 27, 32)
+                    colors.text
                 )
 
                 setTypeface(
@@ -364,7 +425,7 @@ class MainActivity : Activity() {
                 textSize = 14f
 
                 setTextColor(
-                    Color.rgb(100, 105, 114)
+                    colors.secondaryText
                 )
 
                 setPadding(
@@ -523,12 +584,16 @@ class MainActivity : Activity() {
 
                         textSize = 16f
                         gravity = Gravity.CENTER
+                        minimumHeight = dp(48)
+                        minimumWidth = dp(48)
+                        isSelected = selected
+                        contentDescription = "${dayLong(day)} auswählen"
 
                         setTextColor(
                             if (selected) {
-                                Color.WHITE
+                                colors.accent
                             } else {
-                                Color.rgb(55, 60, 69)
+                                colors.secondaryText
                             }
                         )
 
@@ -544,9 +609,9 @@ class MainActivity : Activity() {
                         background =
                             roundedBackground(
                                 if (selected) {
-                                    Color.rgb(51, 82, 235)
+                                    colors.elevated
                                 } else {
-                                    Color.WHITE
+                                    colors.surface
                                 },
                                 18f
                             )
@@ -703,7 +768,7 @@ class MainActivity : Activity() {
                 )
 
                 setTextColor(
-                    Color.rgb(40, 45, 54)
+                    colors.text
                 )
             }
 
@@ -726,7 +791,7 @@ class MainActivity : Activity() {
                 textSize = 16f
 
                 setTextColor(
-                    Color.rgb(24, 27, 32)
+                    colors.text
                 )
             }
 
@@ -740,7 +805,7 @@ class MainActivity : Activity() {
                 textSize = 12f
 
                 setTextColor(
-                    Color.rgb(115, 120, 129)
+                    colors.secondaryText
                 )
 
                 setPadding(
@@ -757,7 +822,7 @@ class MainActivity : Activity() {
         row.addView(
             time,
             LinearLayout.LayoutParams(
-                dp(58),
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
@@ -922,7 +987,7 @@ class MainActivity : Activity() {
                 )
 
                 setTextColor(
-                    Color.rgb(58, 63, 72)
+                    colors.secondaryText
                 )
             }
 
@@ -932,7 +997,7 @@ class MainActivity : Activity() {
                 textSize = 14f
 
                 setTextColor(
-                    Color.rgb(32, 36, 43)
+                    colors.text
                 )
 
                 setPadding(
@@ -946,7 +1011,7 @@ class MainActivity : Activity() {
         row.addView(
             time,
             LinearLayout.LayoutParams(
-                dp(56),
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
@@ -1101,7 +1166,7 @@ class MainActivity : Activity() {
                 textSize = 15f
 
                 setTextColor(
-                    Color.rgb(48, 53, 62)
+                    colors.secondaryText
                 )
             }
 
@@ -1118,9 +1183,9 @@ class MainActivity : Activity() {
 
                 setTextColor(
                     if (okay) {
-                        Color.rgb(25, 125, 75)
+                        colors.success
                     } else {
-                        Color.rgb(173, 78, 30)
+                        colors.warning
                     }
                 )
 
@@ -1144,30 +1209,7 @@ class MainActivity : Activity() {
         return row
     }
 
-    private fun cardContainer(
-        padding: Int =
-            dp(18)
-    ): LinearLayout =
-        LinearLayout(this).apply {
-            orientation =
-                LinearLayout.VERTICAL
-
-            setPadding(
-                padding,
-                padding,
-                padding,
-                padding
-            )
-
-            background =
-                roundedBackground(
-                    Color.WHITE,
-                    20f
-                )
-
-            elevation =
-                dp(1).toFloat()
-        }
+    private fun cardContainer(padding: Int = dp(18)): LinearLayout = R52Card(this, colors, padding)
 
     private fun sectionTitle(
         text: String
@@ -1182,7 +1224,7 @@ class MainActivity : Activity() {
             )
 
             setTextColor(
-                Color.rgb(24, 27, 32)
+                colors.text
             )
 
             setPadding(
@@ -1207,7 +1249,7 @@ class MainActivity : Activity() {
             )
 
             setTextColor(
-                Color.rgb(51, 82, 235)
+                colors.accent
             )
 
             setPadding(
@@ -1231,7 +1273,7 @@ class MainActivity : Activity() {
             )
 
             setTextColor(
-                Color.rgb(24, 27, 32)
+                colors.text
             )
         }
 
@@ -1243,7 +1285,7 @@ class MainActivity : Activity() {
             textSize = 14f
 
             setTextColor(
-                Color.rgb(100, 105, 114)
+                colors.secondaryText
             )
 
             setPadding(
@@ -1262,12 +1304,12 @@ class MainActivity : Activity() {
             textSize = 12f
 
             setTextColor(
-                Color.rgb(51, 82, 235)
+                colors.accent
             )
 
             background =
                 roundedBackground(
-                    Color.rgb(237, 240, 255),
+                    colors.elevated,
                     10f
                 )
 
@@ -1287,24 +1329,12 @@ class MainActivity : Activity() {
                 }
         }
 
-    private fun secondaryButton(
-        text: String
-    ): Button =
-        Button(this).apply {
-            this.text = text
-            isAllCaps = false
-            textSize = 14f
-
-            setTypeface(
-                typeface,
-                Typeface.BOLD
-            )
-        }
+    private fun secondaryButton(text: String): Button = R52Button(this, text, colors)
 
     private fun divider(): View =
         View(this).apply {
             setBackgroundColor(
-                Color.rgb(235, 237, 241)
+                colors.stroke
             )
 
             layoutParams =
