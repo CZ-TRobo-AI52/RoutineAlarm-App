@@ -11,6 +11,10 @@ import java.util.Locale
 object HomeUiMapper {
     /** The caller supplies scheduledEvents, never the registry's internal training cues. */
     fun map(now: ZonedDateTime, planEnabled: Boolean, exactAllowed: Boolean,
+        scheduledEvents: List<RoutineEvent>): HomeUiState =
+        project(now, planEnabled, exactAllowed, scheduledEvents).copy(projectedAt = now)
+
+    private fun project(now: ZonedDateTime, planEnabled: Boolean, exactAllowed: Boolean,
         scheduledEvents: List<RoutineEvent>): HomeUiState {
         val greeting=when(now.hour) {
             in 5..10 -> "Guten Morgen, Christian"

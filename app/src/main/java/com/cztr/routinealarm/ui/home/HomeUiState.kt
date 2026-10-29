@@ -9,4 +9,5 @@ data class HomeUpcomingItem(val id: String, val title: String, val timeLabel: St
 
 /** A weekly-plan projection. It contains no receipt or user-completion assertions. */
 data class HomeUiState(val greeting: String, val planState: HomePlanState,
-    val title: String, val detail: String, val upcoming: List<HomeUpcomingItem>)
+    val title: String, val detail: String, val upcoming: List<HomeUpcomingItem>,
+    val projectedAt: ZonedDateTime? = null)

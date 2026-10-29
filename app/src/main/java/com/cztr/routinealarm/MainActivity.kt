@@ -111,7 +111,10 @@ class MainActivity : Activity() {
                     AlarmScheduler.canScheduleExact(this), ScheduleRegistry.scheduledEvents)
                 root.addView(com.cztr.routinealarm.ui.home.HomeScreenView(this, home, colors,
                     onOpenPlan = { navigation.destination = AppDestination.PLAN; render() },
-                    onOpenSystem = { navigation.destination = AppDestination.MORE; render() }))
+                    onOpenSystem = { navigation.destination = AppDestination.MORE; render() },
+                    onOpenBackup = { startActivity(Intent(this,
+                        com.cztr.routinealarm.backup.BackupActivity::class.java)) },
+                    onRefresh = { render() }))
                 addTestAlarmCard(root)
             }
             AppDestination.PLAN -> {
