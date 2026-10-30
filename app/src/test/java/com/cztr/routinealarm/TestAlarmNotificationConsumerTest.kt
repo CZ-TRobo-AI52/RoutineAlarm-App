@@ -317,6 +317,35 @@ class TestAlarmNotificationConsumerTest {
         }
     }
 
+    /** Restored task state is not a new explicit notification tap. Missing precommit
+     * payload cannot authorize reconstruction using a fresh clock observation. */
+    @Test fun recreatedNotificationWithoutFrozenOriginalCannotInventANewRequest() {
+        val first = fixture()
+        val value = action(notification(first), "Erledigt")
+        UiReadDatabaseGate.failNext()
+        val originalScreen = open(Intent(value)); drain(originalScreen)
+        assertTrue(labels(originalScreen).contains("Aktion nicht bestätigt"))
+        val saved = Bundle().also { originalScreen.saveInstanceState(it) }
+        val original = savedAction(saved)
+        assertTrue(saved.containsKey("test-alarm.pending-action.v1"))
+        inspect { repo ->
+            assertEquals(first, repo.get(first.id))
+            assertNull(StableTestAlarmActions(repo, Clock.systemUTC()).recover(original.id))
+        }
+        originalScreen.destroy(); screens.remove(originalScreen)
+        // Inject loss of the precommit original from genuine saved request state.
+        // This does not claim an Android process-kill or storage-corruption result.
+        saved.remove("test-alarm.pending-action.v1")
+        val restored = open(Intent(value), saved)
+        drain(restored)
+        inspect { repo ->
+            assertEquals("Recreated notification without its original request changed persisted state",
+                first, repo.get(first.id))
+            assertEquals("Missing original payload created a new journal binding", 2, repo.history(first.id).size)
+        }
+        assertFalse("Unconfirmed recreation reported completion", restored.get().isFinishing)
+    }
+
     private fun fixture(): RoutineOccurrence = inspect { repo ->
         val now = Instant.ofEpochMilli(System.currentTimeMillis())
         val planned = TestAlarmCoordinator(repo, Clock.fixed(now.minusSeconds(61), ZoneOffset.UTC)).create(1)

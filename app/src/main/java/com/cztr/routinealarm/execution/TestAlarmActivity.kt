@@ -60,6 +60,14 @@ class TestAlarmActivity : Activity() {
         val restoredStage = savedInstanceState?.getString(NOTIFICATION_STAGE)?.let {
             runCatching { MenuStage.valueOf(it) }.getOrElse { invalidStage = true; null }
         }
+        // A recreated Activity is not a fresh notification tap. If its saved state no
+        // longer contains either the frozen request or a navigational menu stage, the
+        // retained notification Intent must not manufacture a new request with a new
+        // clock observation.
+        if (savedInstanceState != null && TestAlarmNotification.hasTransport(intent) &&
+            pendingAction == null && restoredStage == null && !invalidPendingAction && !invalidStage) {
+            invalidPendingAction = true
+        }
         readIntent(intent, restoredStage, invalidStage)
     }
 
