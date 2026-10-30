@@ -149,6 +149,7 @@ class TestAlarmIntegrationTest {
         try {
             awaitUi(activity.get())
             buttons(activity.get().window.decorView).single { it.text == "Erledigt" }.performClick()
+            awaitUi(activity.get())
             assertTrue(activity.get().isFinishing)
             TestAlarmRuntime.repository(context).use {
                 assertEquals(OccurrenceStatus.DONE, it.get(item.id)!!.status)
@@ -165,6 +166,7 @@ class TestAlarmIntegrationTest {
         try {
             awaitUi(activity.get())
             buttons(activity.get().window.decorView).single { it.text == "5 Minuten später" }.performClick()
+            awaitUi(activity.get())
             val snoozed = repo.get(item.id)!!
             assertEquals(OccurrenceStatus.SNOOZED, snoozed.status)
             assertEquals(item.plannedAt, snoozed.plannedAt)

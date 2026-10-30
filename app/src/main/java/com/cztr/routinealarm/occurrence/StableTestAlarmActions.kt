@@ -1,6 +1,7 @@
 package com.cztr.routinealarm.occurrence
 
 import java.time.Clock
+import java.time.Instant
 
 /**
  * Core facade for one immutable request from the test-alarm screen. No Android effect is issued.
@@ -10,11 +11,8 @@ import java.time.Clock
  * Results describe local transactions. A historical duplicate cannot authorize scheduling/audio.
  */
 class StableTestAlarmActions(private val repository: SqliteOccurrenceRepository, private val clock: Clock) {
-    fun prepare(requestId: String, token: AlarmDelivery, type: ActionType, minutes: Int? = null): ExecutionAction {
-        require(token.valid)
-        return ExecutionAction(requestId, token.occurrenceId, type, Actor.USER, clock.instant(),
-            token.revision, token.generation, minutes, SOURCE + token.epoch).also { epoch(it) }
-    }
+    fun prepare(requestId: String, token: AlarmDelivery, type: ActionType, minutes: Int? = null): ExecutionAction =
+        freeze(requestId, token, type, clock.instant(), minutes)
 
     fun submit(action: ExecutionAction): ActionResult = repository.applyTestUserAction(action)
 
@@ -27,6 +25,15 @@ class StableTestAlarmActions(private val repository: SqliteOccurrenceRepository,
         // Versioned source binds consumer, test-only scope and ORIGINAL epoch in the persisted
         // full action snapshot. No schema change or second request/idempotency store is needed.
         private const val SOURCE = "test-alarm-screen/1;epoch="
+
+        /** Capture the complete request before asynchronous admission, without opening a database. */
+        fun freeze(requestId: String, token: AlarmDelivery, type: ActionType, occurredAt: Instant,
+            minutes: Int? = null): ExecutionAction {
+            require(token.valid)
+            return ExecutionAction(requestId, token.occurrenceId, type, Actor.USER, occurredAt,
+                token.revision, token.generation, minutes, SOURCE + token.epoch).also { epoch(it) }
+        }
+
         fun epoch(action: ExecutionAction): String {
             require(action.id.startsWith("test-user:") && action.id.length in 11..160)
             require(action.source.startsWith(SOURCE) && action.actor == Actor.USER)

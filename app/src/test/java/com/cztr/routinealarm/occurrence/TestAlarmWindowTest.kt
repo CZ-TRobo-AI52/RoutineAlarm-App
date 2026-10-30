@@ -108,6 +108,7 @@ class TestAlarmWindowTest {
             awaitUi(activity)
             ShadowAlarmManager.setCanScheduleExactAlarms(false)
             buttons(activity.window.decorView).single { it.text == "5 Minuten später" }.performClick()
+            awaitUi(activity)
             assertAlarmWindow(activity, false)
             assertNull(activity.intent.data)
             assertFalse(activity.isFinishing)

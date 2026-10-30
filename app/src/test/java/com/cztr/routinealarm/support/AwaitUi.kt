@@ -12,11 +12,12 @@ import java.util.concurrent.TimeUnit
 
 /** Wait for the real worker response; advancing Robolectric's main queue alone is insufficient. */
 fun awaitUi(activity: Activity) {
-    val pending = setOf("Teststatus wird geladen …", "Testverlauf wird geladen …", "Testwecker wird geprüft …")
+    val pending = setOf("Teststatus wird geladen …", "Testverlauf wird geladen …", "Testwecker wird geprüft …",
+        "Speicherung wird geprüft …")
     val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
     while (System.nanoTime() < deadline) {
         shadowOf(Looper.getMainLooper()).idle()
-        if (labels(activity).none { it in pending }) return
+        if (activity.isFinishing || activity.isDestroyed || labels(activity).none { it in pending }) return
         Thread.sleep(5)
     }
     throw AssertionError("UI read did not finish; visible labels: ${labels(activity)}")

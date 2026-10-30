@@ -82,6 +82,7 @@ class TestAlarmSnoozeUiTest {
         val original = fired()
         withAlarm(original) { activity ->
             choice(activity, minutes).performClick()
+            awaitUi(activity)
             assertTrue(activity.isFinishing)
             TestAlarmRuntime.repository(context).use { reopened ->
                 val saved = requireNotNull(reopened.get(original.id))
@@ -119,6 +120,7 @@ class TestAlarmSnoozeUiTest {
         withAlarm(original) { activity ->
             val button = choice(activity, 2)
             button.performClick()
+            awaitUi(activity)
             val saved = requireNotNull(repo.get(original.id))
             button.performClick() // A queued second tap still carries the old revision.
             assertEquals(saved, repo.get(original.id))
@@ -157,6 +159,7 @@ class TestAlarmSnoozeUiTest {
             TestAlarmRuntime.coordinator(repo).act(AlarmDelivery.from(original), ActionType.DONE)
             val completed = requireNotNull(repo.get(original.id))
             button.performClick()
+            awaitUi(activity)
             assertEquals(completed, repo.get(original.id))
             assertTrue(alarms.isEmpty())
             assertFalse(repo.history(original.id).any { it.actionType == "SNOOZE" && it.outcome == Outcome.APPLIED })
