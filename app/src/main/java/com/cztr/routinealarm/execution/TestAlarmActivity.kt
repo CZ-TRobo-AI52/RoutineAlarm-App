@@ -22,6 +22,7 @@ import java.time.format.DateTimeFormatter
 class TestAlarmActivity : Activity() {
     private companion object {
         const val PENDING_ACTION = "test-alarm.pending-action.v1"
+        const val INVALID_PENDING_ACTION = "test-alarm.invalid-pending-action.v1"
         const val NOTIFICATION_STAGE = "test-alarm.notification-stage.v1"
     }
     private var token: AlarmDelivery? = null
@@ -32,6 +33,7 @@ class TestAlarmActivity : Activity() {
     private val reader = LatestUiLoader()
     private var pendingAction: ExecutionAction? = null
     private var invalidPendingAction = false
+    private var missingOriginalRequest = false
     private var actionInFlight = false
     private var historyCommandInFlight = false
     private var screenRevision = 0L
@@ -50,6 +52,7 @@ class TestAlarmActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        invalidPendingAction = savedInstanceState?.getBoolean(INVALID_PENDING_ACTION) == true
         savedInstanceState?.getString(PENDING_ACTION)?.let { encoded ->
             pendingAction = runCatching {
                 require(encoded.length <= 16_384)
@@ -66,13 +69,14 @@ class TestAlarmActivity : Activity() {
         // clock observation.
         if (savedInstanceState != null && TestAlarmNotification.hasTransport(intent) &&
             pendingAction == null && restoredStage == null && !invalidPendingAction && !invalidStage) {
-            invalidPendingAction = true
+            missingOriginalRequest = true
         }
         readIntent(intent, restoredStage, invalidStage)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         pendingAction?.let { outState.putString(PENDING_ACTION, OccurrenceCodec.encode(it)) }
+        outState.putBoolean(INVALID_PENDING_ACTION, invalidPendingAction)
         notificationStage?.let { outState.putString(NOTIFICATION_STAGE, it.name) }
         super.onSaveInstanceState(outState)
     }
@@ -84,8 +88,15 @@ class TestAlarmActivity : Activity() {
         if (TestAlarmRuntime.token(intent) != token) {
             pendingAction = null
             invalidPendingAction = false
+            missingOriginalRequest = false
             actionInFlight = false
             notificationAwaitingResume = false
+        } else if (missingOriginalRequest && pendingAction == null && !actionInFlight &&
+            !invalidPendingAction && TestAlarmNotification.decode(intent) != null) {
+            // This framework entry is a new explicit tap, not onCreate's retained
+            // Intent. Release only the missing-original rejection, never a payload
+            // rejection or a complete/in-flight request for the same delivery.
+            missingOriginalRequest = false
         }
         setIntent(intent)
         readIntent(intent)
@@ -126,7 +137,7 @@ class TestAlarmActivity : Activity() {
         if (TestAlarmNotification.hasTransport(value)) {
             val route = TestAlarmNotification.decode(value)
             if (route == null || invalidStage) invalidNotification = true
-            else if (pendingAction == null && !invalidPendingAction) {
+            else if (pendingAction == null && !invalidPendingAction && !missingOriginalRequest) {
                 if (restoredStage != null) notificationStage = restoredStage
                 else acceptNotificationChoice(route, incomingDelivery = true)
             }
@@ -158,6 +169,7 @@ class TestAlarmActivity : Activity() {
         pendingAction = null
         notificationAwaitingResume = false
         invalidPendingAction = false
+        missingOriginalRequest = false
         actionInFlight = false
         historyOffset = 0
         setIntent(Intent(this, javaClass))
@@ -173,7 +185,7 @@ class TestAlarmActivity : Activity() {
             return
         }
         val pending = pendingAction
-        if (invalidNotification || invalidPendingAction || pending != null && !matchesDelivery(pending, currentToken)) {
+        if (invalidNotification || invalidPendingAction || missingOriginalRequest || pending != null && !matchesDelivery(pending, currentToken)) {
             reader.invalidate()
             show(TestAlarmUiMapper.invalid())
             return
@@ -305,7 +317,7 @@ class TestAlarmActivity : Activity() {
 
     private fun acceptNotificationChoice(route: NotificationActionRoute, incomingDelivery: Boolean = false) {
         val expected = token ?: return
-        if ((stopped && !incomingDelivery) || actionInFlight || pendingAction != null || invalidPendingAction || invalidNotification) return
+        if ((stopped && !incomingDelivery) || actionInFlight || pendingAction != null || invalidPendingAction || missingOriginalRequest || invalidNotification) return
         val selection = NotificationActionRoutes.selection(route, TestAlarmNotification.allowed)
         val frozen = if (selection is MenuSelection.Request) {
             val type = when (selection.operation) {
@@ -412,7 +424,7 @@ class TestAlarmActivity : Activity() {
 
     private fun act(expected: AlarmDelivery, type: ActionType, snoozeMinutes: Int? = null) {
         // A queued second tap cannot replace the request, its timestamp or its snooze duration.
-        if (stopped || isFinishing || isDestroyed || pendingAction != null || invalidPendingAction || token != expected) return
+        if (stopped || isFinishing || isDestroyed || pendingAction != null || invalidPendingAction || missingOriginalRequest || token != expected) return
         pendingAction = StableTestAlarmActions.freeze("test-user:${java.util.UUID.randomUUID()}",
             expected, type, Instant.now(), snoozeMinutes)
         submitPendingAction()
@@ -420,7 +432,7 @@ class TestAlarmActivity : Activity() {
 
     private fun submitPendingAction() {
         val action = pendingAction ?: return
-        if (stopped || isFinishing || isDestroyed || invalidNotification || actionInFlight || !matchesDelivery(action, token)) return
+        if (stopped || isFinishing || isDestroyed || invalidNotification || invalidPendingAction || missingOriginalRequest || actionInFlight || !matchesDelivery(action, token)) return
         actionInFlight = true
         reader.invalidate()
         show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))

@@ -346,6 +346,81 @@ class TestAlarmNotificationConsumerTest {
         assertFalse("Unconfirmed recreation reported completion", restored.get().isFinishing)
     }
 
+    @Test fun newExplicitTapAfterRejectedRecreationCanAuthorizeTheSameDelivery() {
+        val row = fixture()
+        val value = action(notification(row), "Erledigt")
+        val saved = unconfirmedNotificationState(value)
+        saved.remove("test-alarm.pending-action.v1")
+        val restored = open(Intent(value), saved); drain(restored)
+        inspect { assertEquals("Retained Intent must not commit", row, it.get(row.id)) }
+        restored.newIntent(Intent(value)); drain(restored)
+        inspect { repo ->
+            assertEquals("New explicit framework delivery must be admitted", OccurrenceStatus.DONE, repo.get(row.id)!!.status)
+            assertEquals(1, repo.history(row.id).count { it.actionType == "DONE" })
+        }
+    }
+
+    @Test fun sameDeliveryTapCannotReplaceAnUnconfirmedOriginal() {
+        val row = fixture()
+        val note = notification(row)
+        val screen = open(action(note, "Später")); drain(screen)
+        click(screen, "3–5 Minuten"); drain(screen)
+        UiReadDatabaseGate.failNext()
+        click(screen, "3 Minuten später"); drain(screen)
+        val original = savedAction(Bundle().also { screen.saveInstanceState(it) })
+        screen.newIntent(action(note, "Erledigt")); drain(screen)
+        assertEquals(original, savedAction(Bundle().also { screen.saveInstanceState(it) }))
+        inspect { assertEquals(row, it.get(row.id)) }
+        click(screen, "Erneut versuchen"); drain(screen)
+        inspect { repo ->
+            assertEquals(original, StableTestAlarmActions(repo, Clock.systemUTC()).recover(original.id))
+            assertEquals(OccurrenceStatus.SNOOZED, repo.get(row.id)!!.status)
+            assertFalse(repo.history(row.id).any { it.actionType == "DONE" })
+        }
+    }
+
+    @Test fun sameDeliveryTapCannotReplaceAnInFlightOriginal() {
+        val row = fixture()
+        val note = notification(row)
+        val gate = UiReadDatabaseGate.holdNext()
+        val screen = open(action(note, "Erledigt")); gate.awaitEntered()
+        val original = savedAction(Bundle().also { screen.saveInstanceState(it) })
+        screen.newIntent(action(note, "Später"))
+        assertEquals(original, savedAction(Bundle().also { screen.saveInstanceState(it) }))
+        inspect { assertEquals(row, it.get(row.id)) }
+        gate.release.countDown(); drain(screen)
+        inspect { repo ->
+            assertEquals(original, StableTestAlarmActions(repo, Clock.systemUTC()).recover(original.id))
+            assertEquals(1, repo.history(row.id).count { it.actionType == "DONE" })
+        }
+    }
+
+    @Test fun malformedSavedOriginalCannotBeReleasedBySameDeliveryTapOrAnotherRecreation() {
+        val row = fixture()
+        val value = action(notification(row), "Erledigt")
+        val malformed = Bundle().apply { putString("test-alarm.pending-action.v1", "{not-an-original}") }
+        val screen = open(Intent(value), malformed); drain(screen)
+        screen.newIntent(Intent(value)); drain(screen)
+        inspect { assertEquals(row, it.get(row.id)) }
+        val saved = Bundle().also { screen.saveInstanceState(it) }
+        screen.destroy(); screens.remove(screen)
+        val replacement = open(Intent(value), saved); drain(replacement)
+        replacement.newIntent(Intent(value)); drain(replacement)
+        inspect { assertEquals(row, it.get(row.id)); assertEquals(2, it.history(row.id).size) }
+        assertTrue(labels(replacement).contains("Ungültiger Testwecker"))
+    }
+
+    private fun unconfirmedNotificationState(value: Intent): Bundle {
+        UiReadDatabaseGate.failNext()
+        val screen = open(Intent(value)); drain(screen)
+        assertTrue(labels(screen).contains("Aktion nicht bestätigt"))
+        val saved = Bundle().also { screen.saveInstanceState(it) }
+        val original = savedAction(saved)
+        inspect { assertNull(StableTestAlarmActions(it, Clock.systemUTC()).recover(original.id)) }
+        screen.destroy(); screens.remove(screen)
+        return saved
+    }
+
     private fun fixture(): RoutineOccurrence = inspect { repo ->
         val now = Instant.ofEpochMilli(System.currentTimeMillis())
         val planned = TestAlarmCoordinator(repo, Clock.fixed(now.minusSeconds(61), ZoneOffset.UTC)).create(1)
