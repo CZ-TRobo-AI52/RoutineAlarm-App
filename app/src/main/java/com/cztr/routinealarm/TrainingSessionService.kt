@@ -26,6 +26,21 @@ class TrainingSessionService :
     TextToSpeech.OnInitListener {
 
     companion object {
+        @Volatile private var live = java.lang.ref.WeakReference<TrainingSessionService>(null)
+
+        internal fun stopWeeklyOutput(@Suppress("UNUSED_PARAMETER") context: Context, epoch: String) {
+            val service = live.get() ?: return
+            val session = service.sessionId ?: return
+            // Confirmed pause owns this captured identity even after global re-enable.
+            service.handler.post {
+                val admission = service.currentAdmission
+                if (service.sessionId == session &&
+                    admission?.getBooleanExtra(AlarmScheduler.EXTRA_RECURRING, false) == true &&
+                    (admission.getStringExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION)
+                        ?: "before-first-restore") == epoch) service.stopSession()
+            }
+        }
+
         private const val CHANNEL_ID =
             "routine_training_channel"
 
@@ -40,7 +55,8 @@ class TrainingSessionService :
 
         fun start(
             context: Context,
-            startEvent: RoutineEvent
+            startEvent: RoutineEvent,
+            admission: Intent? = null
         ) {
             val day =
                 startEvent.daysOfWeek.single()
@@ -50,6 +66,13 @@ class TrainingSessionService :
                     context,
                     TrainingSessionService::class.java
                 ).apply {
+                    if (admission != null) {
+                        data = admission.data
+                        admission.extras?.let { putExtras(it) }
+                    } else {
+                        putExtra(AlarmScheduler.EXTRA_RECURRING, false)
+                        putExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(context))
+                    }
                     putExtra(
                         EXTRA_DAY,
                         day.name
@@ -89,7 +112,9 @@ class TrainingSessionService :
         List<RoutineEvent> =
         emptyList()
 
-    private var sessionId:
+    private var currentAdmission: Intent? = null
+
+    @Volatile private var sessionId:
         String? = null
 
     private var destroyed = false
@@ -103,6 +128,7 @@ class TrainingSessionService :
 
     override fun onCreate() {
         super.onCreate()
+        live = java.lang.ref.WeakReference(this)
 
         createNotificationChannel()
 
@@ -140,6 +166,12 @@ class TrainingSessionService :
             stopSession()
             return START_NOT_STICKY
         }
+
+        if (!ScheduleState.isDeliveryAllowed(this, intent)) {
+            if (sessionId == null || !ScheduleState.isDeliveryAllowed(this, currentAdmission)) stopSession()
+            return START_NOT_STICKY
+        }
+        currentAdmission = Intent(intent!!)
 
         handler.removeCallbacksAndMessages(null)
         tts?.stop()
@@ -256,6 +288,7 @@ class TrainingSessionService :
     }
 
     private fun scheduleCues() {
+        if (!ensureCurrentAdmission()) return
         val scheduledSession = sessionId ?: return
         handler.removeCallbacksAndMessages(
             null
@@ -341,6 +374,7 @@ class TrainingSessionService :
         scheduledSession: String
     ) {
         if (sessionId != scheduledSession || destroyed) return
+        if (!ensureCurrentAdmission()) return
         val manager =
             getSystemService(
                 NotificationManager::class.java
@@ -359,6 +393,12 @@ class TrainingSessionService :
             null,
             utteranceId(scheduledSession, event)
         )
+    }
+
+    private fun ensureCurrentAdmission(): Boolean {
+        if (!destroyed && sessionId != null && ScheduleState.isDeliveryAllowed(this, currentAdmission)) return true
+        stopSession()
+        return false
     }
 
     private fun utteranceId(session: String, event: RoutineEvent) =
@@ -458,6 +498,7 @@ class TrainingSessionService :
     }
 
     private fun stopSession() {
+        currentAdmission = null
         sessionId = null
         sessionEvents = emptyList()
         lastScheduledUtteranceId = null
@@ -475,6 +516,8 @@ class TrainingSessionService :
     }
 
     override fun onDestroy() {
+        if (live.get() === this) live.clear()
+        currentAdmission = null
         destroyed = true
         sessionId = null
         sessionEvents = emptyList()

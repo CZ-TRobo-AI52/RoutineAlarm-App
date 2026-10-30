@@ -66,7 +66,8 @@ class AlarmReceiver : BroadcastReceiver() {
         ) {
             TrainingSessionService.start(
                 context,
-                event
+                event,
+                intent
             )
 
             return

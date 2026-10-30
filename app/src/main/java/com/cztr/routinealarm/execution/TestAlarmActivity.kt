@@ -2,11 +2,15 @@ package com.cztr.routinealarm.execution
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
-import android.os.Bundle
 import android.os.Build
+import android.os.Bundle
+import android.view.View
 import android.view.WindowManager
-import android.widget.*
+import android.widget.Toast
+import com.cztr.routinealarm.AlarmScheduler
+import com.cztr.routinealarm.ui.shell.AppNavigationState
+import com.cztr.routinealarm.ui.shell.ThemePreferenceStore
+import com.cztr.routinealarm.ui.testalarm.*
 import com.cztr.routinealarm.occurrence.*
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -16,6 +20,7 @@ class TestAlarmActivity : Activity() {
     private var token: AlarmDelivery? = null
     private var tokenWasSupplied = false
     private var historyOffset = 0
+    private var currentPage: TestAlarmHistoryPage? = null
     private val time = DateTimeFormatter.ofPattern("dd.MM. HH:mm:ss").withZone(ZoneId.systemDefault())
     private val reader = LatestUiLoader()
 
@@ -28,11 +33,13 @@ class TestAlarmActivity : Activity() {
         super.onCreate(savedInstanceState)
         readIntent(intent)
     }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         readIntent(intent)
     }
+
     override fun onResume() {
         super.onResume()
         TestAlarmRuntime.requestRecovery(this)
@@ -52,6 +59,7 @@ class TestAlarmActivity : Activity() {
     private fun readIntent(value: Intent) {
         token = TestAlarmRuntime.token(value)
         tokenWasSupplied = value.data != null
+        currentPage = null
         val isAlarm = token != null
         if (Build.VERSION.SDK_INT >= 27) {
             setShowWhenLocked(isAlarm)
@@ -69,107 +77,132 @@ class TestAlarmActivity : Activity() {
 
     private fun openHistory() {
         historyOffset = 0
-        val historyIntent = Intent(this, javaClass)
-        setIntent(historyIntent)
-        readIntent(historyIntent)
+        setIntent(Intent(this, javaClass))
+        readIntent(intent)
     }
 
     private fun render() {
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(28), dp(24), dp(28))
-            setBackgroundColor(Color.rgb(247, 248, 250))
-        }
-        setContentView(ScrollView(this).apply { addView(root) })
         val currentToken = token
         val requestedOffset = historyOffset
         if (currentToken == null && tokenWasSupplied) {
             reader.invalidate()
-            root.text("Ungültiger Testwecker", 26f)
-            root.text("Die Alarmidentität fehlt oder wurde verändert.")
-            root.button("Schließen") { finish() }
+            show(TestAlarmUiMapper.invalid())
             return
         }
-        root.text(if (currentToken == null) "Testverlauf wird geladen …" else "Testwecker wird geprüft …", 26f)
-        root.button("Schließen") { finish() }
+        show(TestAlarmUiMapper.loading(currentToken != null))
         val app = applicationContext
         reader.load({
             TestAlarmRuntime.repository(app).use { repo ->
-                if (currentToken != null) ReadResult.Active(TestAlarmRuntime.coordinator(repo).active(currentToken))
-                else ReadResult.History(repo.historyPage(requestedOffset))
+                if (currentToken != null) {
+                    ReadResult.Active(TestAlarmRuntime.coordinator(repo).active(currentToken))
+                } else {
+                    ReadResult.History(repo.historyPage(requestedOffset))
+                }
             }
         }) { result ->
             if (!isFinishing && !isDestroyed) {
-                root.removeAllViews()
                 result.fold(onSuccess = { read ->
                     when (read) {
-                        is ReadResult.Active -> showActive(root, currentToken!!, read.occurrence)
-                        is ReadResult.History -> showHistory(root, read.page, requestedOffset)
+                        is ReadResult.Active -> {
+                            currentPage = null
+                            val active = read.occurrence
+                            show(TestAlarmUiMapper.active(
+                                title = active?.title ?: "Dieser Testwecker ist nicht mehr aktiv",
+                                spokenText = active?.spokenText,
+                                plannedText = active?.let { "Geplant: ${time.format(it.plannedAt)}" },
+                                triggeredText = active?.let { "Ausgelöst: ${time.format(it.lastUpdatedAt)}" },
+                                active = active != null,
+                            ))
+                        }
+                        is ReadResult.History -> {
+                            currentPage = read.page
+                            show(historyState(read.page, requestedOffset))
+                        }
                     }
                 }, onFailure = {
-                    root.text("Der Testverlauf konnte nicht gelesen werden. Die Daten bleiben erhalten.")
-                    root.button("Erneut versuchen") { render() }
+                    currentPage = null
+                    show(TestAlarmUiMapper.error())
                 })
-                root.button("Schließen") { finish() }
             }
         }
     }
 
-    private fun showActive(root: LinearLayout, expected: AlarmDelivery, active: RoutineOccurrence?) {
-        root.text(active?.title ?: "Dieser Testwecker ist nicht mehr aktiv", 26f)
-        if (active != null) {
-            root.text(active.spokenText)
-            root.text("Geplant: ${time.format(active.plannedAt)}\n" +
-                "Ausgelöst: ${time.format(active.lastUpdatedAt)}")
-            root.button("Erledigt") { act(expected, ActionType.DONE) }
-            for (minutes in 1..5) {
-                val label = if (minutes == 1) "1 Minute später" else "$minutes Minuten später"
-                root.button(label) { act(expected, ActionType.SNOOZE, minutes) }
-            }
-            root.button("Überspringen") { act(expected, ActionType.SKIP) }
-        } else root.text("Die gespeicherte Entscheidung bleibt erhalten.")
-        root.button("Testverlauf öffnen") { openHistory() }
-    }
-
-    private fun showHistory(root: LinearLayout, page: TestAlarmHistoryPage, offset: Int) {
-        root.text("Testverlauf", 26f)
-        root.text("Testwecker ab Eintrag ${offset + 1}, höchstens 20 je Seite. Sie zählen nicht als persönliche Routinen.")
-        if (page.pausedCount > 0) root.text(
-            "${page.pausedCount} übernommene Ereignisse sind pausiert. Hier werden Testwecker angezeigt. Gesicherte Planungsrückmeldungen gehören zum früheren Gerät bzw. Datenstand und bestätigen keine aktuelle Planung.")
-        root.text("Zukünftige Testwecker werden bei App-Rückkehr und nach einem Neustart automatisch wieder eingeplant, sobald genaue Alarme erlaubt sind. Offene und überfällige Tests kannst du hier selbst erneut planen oder öffnen. Vergangene Weckzeiten lösen nur beim manuellen erneuten Planen sofort aus.")
-        if (!com.cztr.routinealarm.AlarmScheduler.canScheduleExact(this)) {
-            root.text("Genaue Alarme sind nicht erlaubt. Bitte die Berechtigung in den Systemeinstellungen aktivieren; gespeicherte Tests bleiben erhalten.")
-        }
-        if (page.items.isEmpty()) root.text("Keine weiteren Testwecker vorhanden.")
-        page.items.forEach { row ->
+    private fun historyState(page: TestAlarmHistoryPage, offset: Int): TestAlarmUiState.History {
+        val rows = page.items.map { row ->
             val item = row.occurrence
-            root.text("${time.format(item.plannedAt)} · ${TestAlarmRuntime.label(item.status)}", 19f)
-            root.text("Snooze: ${item.snoozeCount} · gesamt ${item.totalSnoozeMinutes} Min.\n" +
-                "Aktuelle Weckzeit: ${time.format(item.currentTriggerAt)}")
-            root.text(TestAlarmRuntime.schedulingLabel(row.latestSchedulingAttempt, item))
-            if (!row.deliveryAllowed) {
-                root.text("Aus Sicherung übernommen · pausiert")
-                root.button("Wiederhergestellten Test aktivieren") { confirmActivation(item.id) }
+            val action = if (!row.deliveryAllowed) {
+                TestHistoryRowAction.ACTIVATE
             } else when (item.status) {
-                OccurrenceStatus.TRIGGERED -> root.button("Offenen Testwecker öffnen") {
-                    runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
-                    startActivity(TestAlarmRuntime.putToken(Intent(this, javaClass), AlarmDelivery.from(item, page.deliveryEpoch)))
-                }
-                OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED -> root.button("Erneut planen") {
-                    runCatching { TestAlarmRuntime.schedule(this, item) }
-                        .onSuccess { toast("Testwecker erneut geplant. Vergangene Weckzeiten lösen sofort aus.") }
-                        .onFailure { showError(it) }
-                }
-                else -> Unit
+                OccurrenceStatus.TRIGGERED -> TestHistoryRowAction.OPEN
+                OccurrenceStatus.SCHEDULED, OccurrenceStatus.SNOOZED -> TestHistoryRowAction.REPLAN
+                else -> null
             }
+            TestHistoryUiRow(
+                id = item.id,
+                headline = "${time.format(item.plannedAt)} · ${TestAlarmRuntime.label(item.status)}",
+                detail = "Snooze: ${item.snoozeCount} · gesamt ${item.totalSnoozeMinutes} Min.\n" +
+                    "Aktuelle Weckzeit: ${time.format(item.currentTriggerAt)}",
+                scheduling = TestAlarmRuntime.schedulingLabel(row.latestSchedulingAttempt, item),
+                pausedNotice = if (row.deliveryAllowed) null else "Aus Sicherung übernommen · pausiert",
+                action = action,
+            )
         }
-        if (offset > 0) root.button("Neuere Tests") {
-            historyOffset = (offset - 20).coerceAtLeast(0)
-            render()
+        return TestAlarmUiMapper.history(
+            offset = offset,
+            pausedCount = page.pausedCount,
+            exactAllowed = AlarmScheduler.canScheduleExact(this),
+            rows = rows,
+            hasNewer = offset > 0,
+            hasOlder = page.items.size == 20,
+        )
+    }
+
+    private fun show(state: TestAlarmUiState) {
+        val colors = AppNavigationState(theme = ThemePreferenceStore(this).read())
+            .colors(resources.configuration)
+        window.statusBarColor = colors.background
+        window.navigationBarColor = colors.background
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = if (colors == com.cztr.routinealarm.ui.design.R52Colors.Light)
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else 0
+        setContentView(TestAlarmScreenView(this, state, colors, ::handleUiAction))
+    }
+
+    private fun handleUiAction(action: TestAlarmUiAction) {
+        when (action) {
+            TestAlarmUiAction.CLOSE -> finish()
+            TestAlarmUiAction.RETRY -> render()
+            TestAlarmUiAction.OPEN_HISTORY -> openHistory()
+            TestAlarmUiAction.DONE -> token?.let { act(it, ActionType.DONE) }
+            TestAlarmUiAction.SKIP -> token?.let { act(it, ActionType.SKIP) }
+            is TestAlarmUiAction.Snooze -> token?.let { act(it, ActionType.SNOOZE, action.minutes) }
+            TestAlarmUiAction.NEWER -> {
+                historyOffset = (historyOffset - 20).coerceAtLeast(0)
+                render()
+            }
+            TestAlarmUiAction.OLDER -> {
+                historyOffset += 20
+                render()
+            }
+            is TestAlarmUiAction.HistoryRow -> handleHistoryRow(action)
         }
-        if (page.items.size == 20) root.button("Ältere Tests") {
-            historyOffset = offset + 20
-            render()
+    }
+
+    private fun handleHistoryRow(action: TestAlarmUiAction.HistoryRow) {
+        val page = currentPage ?: return
+        val item = page.items.firstOrNull { it.occurrence.id == action.id }?.occurrence ?: return
+        when (action.action) {
+            TestHistoryRowAction.ACTIVATE -> confirmActivation(item.id)
+            TestHistoryRowAction.OPEN -> {
+                runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
+                startActivity(TestAlarmRuntime.putToken(
+                    Intent(this, javaClass),
+                    AlarmDelivery.from(item, page.deliveryEpoch),
+                ))
+            }
+            TestHistoryRowAction.REPLAN -> runCatching { TestAlarmRuntime.schedule(this, item) }
+                .onSuccess { toast("Testwecker erneut geplant. Vergangene Weckzeiten lösen sofort aus.") }
+                .onFailure { showError(it) }
         }
     }
 
@@ -206,8 +239,6 @@ class TestAlarmActivity : Activity() {
                 render()
                 return
             }
-            // Commit first. Android scheduling can fail separately; retain SNOOZED
-            // and show an explicit retry path instead of claiming the alarm is armed.
             val scheduleError = if (type == ActionType.SNOOZE)
                 runCatching { TestAlarmRuntime.schedule(this, result.occurrence) }.exceptionOrNull() else null
             TestAlarmRuntime.reconcileOccurrence(this, result.occurrence.id)
@@ -219,25 +250,15 @@ class TestAlarmActivity : Activity() {
                 toast("${TestAlarmRuntime.label(result.occurrence.status)} · gespeichert")
                 finish()
             }
-        } catch (error: Exception) { showError(error) }
+        } catch (error: Exception) {
+            showError(error)
+        }
     }
 
-    private fun LinearLayout.text(value: String, size: Float = 16f) {
-        addView(TextView(this@TestAlarmActivity).apply {
-            text = value; textSize = size; setTextColor(Color.rgb(25, 30, 38))
-            setPadding(0, dp(10), 0, dp(10))
-        })
-    }
-    private fun LinearLayout.button(label: String, click: () -> Unit) {
-        addView(Button(this@TestAlarmActivity).apply {
-            text = label; isAllCaps = false; minHeight = dp(54)
-            setOnClickListener { click() }
-        }, LinearLayout.LayoutParams(-1, -2))
-    }
     private fun showError(error: Throwable) {
         android.util.Log.e("TestAlarm", "Aktion fehlgeschlagen", error)
         toast("Aktion nicht abgeschlossen. Berechtigungen prüfen und erneut versuchen.")
     }
+
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
-    private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 }

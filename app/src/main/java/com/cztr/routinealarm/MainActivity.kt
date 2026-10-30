@@ -1,5 +1,8 @@
 package com.cztr.routinealarm
 
+import com.cztr.routinealarm.ui.design.*
+import com.cztr.routinealarm.ui.components.*
+import com.cztr.routinealarm.ui.shell.*
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
@@ -32,6 +35,10 @@ import java.util.Locale
 
 class MainActivity : Activity() {
 
+    private var navigation = AppNavigationState()
+    private val themeStore by lazy { ThemePreferenceStore(this) }
+    private val colors get() = navigation.colors(resources.configuration)
+
     private val german = Locale.GERMAN
     private val testStatusLoader = com.cztr.routinealarm.execution.LatestUiLoader()
 
@@ -39,18 +46,61 @@ class MainActivity : Activity() {
         ZonedDateTime.now().dayOfWeek
 
     private var showTrainingDetails = false
+    private var studioFilter = com.cztr.routinealarm.ui.studio.StudioFilter.ALL
+    private var studioSelectedId: String? = null
+    private var recoveryRequestedThisSession = false
+    private var weeklyUiVisible = true
+
+    private val weeklyObserver: () -> Unit = java.lang.ref.WeakReference(this).let { reference ->
+        {
+            reference.get()?.let { activity ->
+                if (activity.weeklyUiVisible && !activity.isFinishing && !activity.isDestroyed) activity.render()
+            }
+        }
+    }
+
 
     override fun onCreate(
         savedInstanceState: Bundle?
     ) {
         super.onCreate(savedInstanceState)
+        navigation = AppNavigationState.restore(savedInstanceState).also { restored ->
+            if (savedInstanceState == null) restored.theme = themeStore.read()
+        }
+        selectedDay = savedInstanceState?.getInt("r52_selected_day")?.takeIf { it in 1..7 }
+            ?.let(DayOfWeek::of) ?: selectedDay
+        showTrainingDetails = savedInstanceState?.getBoolean("r52_training_details") ?: false
+        studioFilter = com.cztr.routinealarm.ui.studio.StudioFilter.entries.firstOrNull {
+            it.name == savedInstanceState?.getString("r52_studio_filter")
+        } ?: com.cztr.routinealarm.ui.studio.StudioFilter.ALL
+        studioSelectedId = savedInstanceState?.getString("r52_studio_selected_id")
         render()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        navigation.save(outState)
+        outState.putInt("r52_selected_day", selectedDay.value)
+        outState.putBoolean("r52_training_details", showTrainingDetails)
+        outState.putString("r52_studio_filter", studioFilter.name)
+        outState.putString("r52_studio_selected_id", studioSelectedId)
+        super.onSaveInstanceState(outState)
+    }
+
+    @Deprecated("Platform back navigation")
+    override fun onBackPressed() {
+        if (navigation.destination != AppDestination.TODAY) {
+            navigation.destination = AppDestination.TODAY
+            render()
+        } else super.onBackPressed()
     }
 
     override fun onResume() {
         super.onResume()
+        weeklyUiVisible = true
+        ScheduleState.observe(this, weeklyObserver)
 
         com.cztr.routinealarm.execution.TestAlarmRuntime.requestRecovery(this)
+        recoveryRequestedThisSession = true
 
         if (
             ScheduleState.isEnabled(this) &&
@@ -63,48 +113,151 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        weeklyUiVisible = false
+        ScheduleState.unobserve(this, weeklyObserver)
         testStatusLoader.invalidate()
         super.onStop()
     }
 
     override fun onDestroy() {
+        ScheduleState.unobserve(this, weeklyObserver)
         testStatusLoader.close()
         super.onDestroy()
     }
 
     private fun render() {
-        val scroll =
-            ScrollView(this).apply {
-                isFillViewport = true
-                setBackgroundColor(
-                    Color.rgb(246, 247, 249)
-                )
-            }
-
-        val root =
-            LinearLayout(this).apply {
-                orientation =
-                    LinearLayout.VERTICAL
-
-                setPadding(
-                    dp(20),
-                    dp(28),
-                    dp(20),
-                    dp(40)
-                )
-            }
-
+        testStatusLoader.invalidate()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(24), dp(20), dp(24))
+        }
         addHeader(root)
-        addTestAlarmCard(root)
-        addNextRoutineCard(root)
-        addScheduleToggleCard(root)
-        addDaySelector(root)
-        addDaySchedule(root)
-        addTrainingCard(root)
-        addSystemCard(root)
-
-        scroll.addView(root)
-        setContentView(scroll)
+        ScheduleState.writeNotice(this)?.let { root.addView(secondaryText(it)) }
+        when (navigation.destination) {
+            AppDestination.TODAY -> {
+                val homeInput = com.cztr.routinealarm.ui.home.HomeProjectionSource.from(
+                    ZonedDateTime.now(), ScheduleState.isEnabled(this),
+                    AlarmScheduler.canScheduleExact(this), ScheduleRegistry.scheduledEvents)
+                val home = com.cztr.routinealarm.ui.home.HomeUiMapper.map(homeInput)
+                root.addView(com.cztr.routinealarm.ui.home.HomeScreenView(this, home, colors) { action ->
+                    when (action) {
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_PLAN -> {
+                            navigation.destination = AppDestination.PLAN
+                            render()
+                        }
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_HISTORY -> openTestHistory()
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_SYSTEM -> {
+                            navigation.destination = AppDestination.MORE
+                            render()
+                        }
+                    }
+                })
+                addTestAlarmCard(root)
+            }
+            AppDestination.PLAN -> {
+                val planInput = com.cztr.routinealarm.ui.plan.PlanProjectionSource.from(
+                    planEnabled = ScheduleState.isEnabled(this),
+                    exactAllowed = AlarmScheduler.canScheduleExact(this),
+                    activeEventCount = ScheduleRegistry.enabledEvents.size,
+                    selectedDay = selectedDay,
+                    events = PersonalSchedule.allEvents,
+                    training = TrainingSessionPlan.eventsFor(selectedDay),
+                    showTrainingDetails = showTrainingDetails,
+                )
+                val plan = com.cztr.routinealarm.ui.plan.PlanUiMapper.map(planInput)
+                root.addView(com.cztr.routinealarm.ui.plan.PlanScreenView(
+                    this,
+                    plan,
+                    colors,
+                    onPrimaryAction = {
+                        if (plan.availability == com.cztr.routinealarm.ui.plan.PlanAvailability.PERMISSION_REQUIRED) {
+                            navigation.destination = AppDestination.MORE
+                            render()
+                        } else if (ScheduleState.requestedEnabled(this)) {
+                            disableSchedule()
+                        } else {
+                            enableScheduleFromPlan()
+                        }
+                    },
+                    onSelectDay = { day ->
+                        selectedDay = day
+                        showTrainingDetails = false
+                        render()
+                    },
+                    onToggleTraining = {
+                        showTrainingDetails = !showTrainingDetails
+                        render()
+                    },
+                    requestedEnabled = ScheduleState.requestedEnabled(this),
+                ))
+            }
+            AppDestination.STUDIO -> {
+                val studioInput = com.cztr.routinealarm.ui.studio.StudioProjectionSource.from(
+                    PersonalSchedule.allEvents,
+                    studioFilter,
+                    studioSelectedId,
+                )
+                val studio = com.cztr.routinealarm.ui.studio.StudioUiMapper.map(studioInput)
+                root.addView(com.cztr.routinealarm.ui.studio.StudioScreenView(
+                    this,
+                    studio,
+                    colors,
+                    onSelectFilter = { filter ->
+                        studioFilter = filter
+                        studioSelectedId = null
+                        render()
+                    },
+                    onSelectRoutine = { id ->
+                        studioSelectedId = id
+                        render()
+                    },
+                ))
+            }
+            AppDestination.HISTORY -> addHistoryScreen(root)
+            AppDestination.MORE -> {
+                @Suppress("DEPRECATION")
+                val info = packageManager.getPackageInfo(packageName, 0)
+                val systemInput = com.cztr.routinealarm.ui.system.SystemProjectionSource.from(
+                    notificationPermissionRequired = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
+                    notificationGranted = hasNotificationPermission(),
+                    exactAlarmGranted = AlarmScheduler.canScheduleExact(this),
+                    weeklyPlanEnabled = ScheduleState.isEnabled(this),
+                    recoveryRequested = recoveryRequestedThisSession,
+                    versionName = info.versionName ?: "Unbekannte Version",
+                    packageName = packageName,
+                    theme = navigation.theme,
+                )
+                val system = com.cztr.routinealarm.ui.system.SystemUiMapper.map(systemInput)
+                root.addView(com.cztr.routinealarm.ui.system.SystemScreenView(
+                    this,
+                    system,
+                    colors,
+                    onAction = { action ->
+                        when (action) {
+                            com.cztr.routinealarm.ui.system.SystemAction.REQUEST_NOTIFICATIONS -> requestNotificationPermission()
+                            com.cztr.routinealarm.ui.system.SystemAction.REQUEST_EXACT_ALARMS -> requestExactAlarmPermission()
+                            com.cztr.routinealarm.ui.system.SystemAction.OPEN_BACKUP -> startActivity(
+                                Intent(this, com.cztr.routinealarm.backup.BackupActivity::class.java)
+                            )
+                            com.cztr.routinealarm.ui.system.SystemAction.OPEN_HISTORY -> openTestHistory()
+                            com.cztr.routinealarm.ui.system.SystemAction.SCHEDULE_TEST_ALARM -> scheduleOneMinuteTestAlarm()
+                            com.cztr.routinealarm.ui.system.SystemAction.SET_THEME_DARK -> setThemeChoice(ThemeChoice.DARK)
+                            com.cztr.routinealarm.ui.system.SystemAction.SET_THEME_LIGHT -> setThemeChoice(ThemeChoice.LIGHT)
+                            com.cztr.routinealarm.ui.system.SystemAction.SET_THEME_SYSTEM -> setThemeChoice(ThemeChoice.SYSTEM)
+                        }
+                    },
+                ))
+            }
+        }
+        window.statusBarColor = colors.background
+        window.navigationBarColor = colors.surface
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = if (colors == R52Colors.Light)
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else 0
+        setContentView(AppShellView(this, navigation.destination, colors, root) { target ->
+            navigation.destination = target
+            render()
+        })
     }
 
     private fun addHeader(
@@ -112,11 +265,11 @@ class MainActivity : Activity() {
     ) {
         val title =
             TextView(this).apply {
-                text = "RoutineAlarm"
+                text = if (navigation.destination == AppDestination.TODAY) "RoutineAlarm" else navigation.destination.label
                 textSize = 30f
 
                 setTextColor(
-                    Color.rgb(24, 27, 32)
+                    colors.text
                 )
 
                 setTypeface(
@@ -147,7 +300,7 @@ class MainActivity : Activity() {
                 textSize = 16f
 
                 setTextColor(
-                    Color.rgb(100, 105, 114)
+                    colors.secondaryText
                 )
 
                 setPadding(
@@ -223,102 +376,63 @@ class MainActivity : Activity() {
         })
     }
 
-    private fun openTestHistory() {
-        startActivity(Intent(this, com.cztr.routinealarm.execution.TestAlarmActivity::class.java))
-    }
-
-    private fun addNextRoutineCard(
-        root: LinearLayout
-    ) {
-        val card = cardContainer()
-
-        card.addView(
-            sectionLabel("NÄCHSTE ROUTINE")
-        )
-
-        if (!ScheduleState.isEnabled(this)) {
-            card.addView(
-                primaryText("Wochenplan pausiert")
-            )
-
-            card.addView(
-                secondaryText(
-                    "Aktiviere den Wochenplan, damit Routinen automatisch ausgeführt werden."
-                )
-            )
-        } else {
-            val now = ZonedDateTime.now()
-
-            val next =
-                ScheduleRegistry
-                    .enabledEvents
-                    .map { event ->
-                        event to
-                            AlarmScheduler.nextOccurrence(
-                                event,
-                                now
-                            )
-                    }
-                    .minByOrNull {
-                        it.second.toInstant()
-                    }
-
-            if (next == null) {
-                card.addView(
-                    primaryText(
-                        "Keine nächste Routine gefunden"
+    private fun addHistoryScreen(root: LinearLayout) {
+        val host = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        fun show(input: com.cztr.routinealarm.ui.history.HistoryUiInput) {
+            host.removeAllViews()
+            host.addView(com.cztr.routinealarm.ui.history.HistoryScreenView(
+                this,
+                com.cztr.routinealarm.ui.history.HistoryUiMapper.map(input),
+                colors,
+                onOpenTestHistory = ::openTestHistory,
+                onRetry = { render() },
+                onOpenSystem = {
+                    navigation.destination = AppDestination.MORE
+                    render()
+                },
+            ))
+        }
+        show(com.cztr.routinealarm.ui.history.HistoryUiInput.loading())
+        root.addView(host, spacedMatchWidth())
+        val app = applicationContext
+        val now = Instant.now()
+        val zone = ZoneId.systemDefault()
+        testStatusLoader.load({
+            com.cztr.routinealarm.execution.TestAlarmRuntime.repository(app).use { repo ->
+                repo.statusSummary(now)
+            }
+        }) { result ->
+            if (!isFinishing && !isDestroyed && navigation.destination == AppDestination.HISTORY) {
+                if (result.isFailure) {
+                    show(com.cztr.routinealarm.ui.history.HistoryUiInput.unavailable())
+                } else {
+                    val status = TestAlarmStatusPresenter.presentSummary(
+                        result.getOrNull(),
+                        now,
+                        zone,
+                        AlarmScheduler.canScheduleExact(this),
                     )
-                )
-            } else {
-                val (event, occurrence) = next
-
-                card.addView(
-                    primaryText(event.title)
-                )
-
-                val dayText =
-                    if (
-                        occurrence.toLocalDate() ==
-                        now.toLocalDate()
-                    ) {
-                        "Heute"
+                    val open = status.openCount
+                    val triggered = status.triggeredCount
+                    val overdue = status.overdueCount
+                    if (open == null || triggered == null || overdue == null) {
+                        show(com.cztr.routinealarm.ui.history.HistoryUiInput.unavailable())
                     } else {
-                        occurrence.dayOfWeek
-                            .getDisplayName(
-                                TextStyle.FULL,
-                                german
-                            )
-                            .replaceFirstChar {
-                                it.titlecase(german)
-                            }
+                        show(com.cztr.routinealarm.ui.history.HistoryUiInput.available(
+                            open,
+                            triggered,
+                            overdue,
+                            status.nextText,
+                            exactAllowed = !status.needsExactPermission,
+                        ))
                     }
-
-                val time =
-                    String.format(
-                        german,
-                        "%02d:%02d",
-                        occurrence.hour,
-                        occurrence.minute
-                    )
-
-                card.addView(
-                    secondaryText(
-                        "$dayText · $time Uhr · ${countdown(now, occurrence)}"
-                    )
-                )
-
-                card.addView(
-                    smallBadge(
-                        categoryName(event.category)
-                    )
-                )
+                }
             }
         }
+    }
 
-        root.addView(
-            card,
-            spacedMatchWidth()
-        )
+    private fun openTestHistory() {
+        startActivity(Intent(this, com.cztr.routinealarm.execution.TestAlarmActivity::class.java))
     }
 
     private fun addScheduleToggleCard(
@@ -347,7 +461,7 @@ class MainActivity : Activity() {
                 textSize = 19f
 
                 setTextColor(
-                    Color.rgb(24, 27, 32)
+                    colors.text
                 )
 
                 setTypeface(
@@ -364,7 +478,7 @@ class MainActivity : Activity() {
                 textSize = 14f
 
                 setTextColor(
-                    Color.rgb(100, 105, 114)
+                    colors.secondaryText
                 )
 
                 setPadding(
@@ -381,7 +495,7 @@ class MainActivity : Activity() {
         val toggle =
             Switch(this).apply {
                 isChecked =
-                    ScheduleState.isEnabled(
+                    ScheduleState.requestedEnabled(
                         this@MainActivity
                     )
             }
@@ -416,6 +530,19 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun enableScheduleFromPlan() {
+        if (!AlarmScheduler.canScheduleExact(this)) {
+            requestExactAlarmPermission()
+            Toast.makeText(
+                this,
+                "Für den Wochenplan werden exakte Wecker benötigt.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        requestScheduleChange(true)
+    }
+
     private fun enableSchedule(
         toggle: Switch
     ) {
@@ -436,52 +563,25 @@ class MainActivity : Activity() {
             return
         }
 
-        ScheduleState.setEnabled(
-            this,
-            true
-        )
+        requestScheduleChange(true)
+    }
 
-        val count =
-            AlarmScheduler.scheduleAll(this)
-
-        Toast.makeText(
-            this,
-            "$count Ereignisse eingeplant",
-            Toast.LENGTH_LONG
-        ).show()
-
+    private fun requestScheduleChange(enabled: Boolean) {
+        val screen = java.lang.ref.WeakReference(this)
+        ScheduleState.requestEnabled(applicationContext, enabled) { result ->
+            screen.get()?.takeIf { it.weeklyUiVisible && !it.isFinishing && !it.isDestroyed }?.let { activity ->
+                if (result.isSuccess) {
+                    val message = if (enabled) result.getOrThrow().toString() + " Ereignisse eingeplant"
+                        else "Wochenplan pausiert"
+                    Toast.makeText(activity, message, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
         render()
     }
 
     private fun disableSchedule() {
-        ScheduleState.setEnabled(
-            this,
-            false
-        )
-
-        AlarmScheduler.cancelAll(this)
-
-        stopService(
-            Intent(
-                this,
-                AlarmService::class.java
-            )
-        )
-
-        stopService(
-            Intent(
-                this,
-                TrainingSessionService::class.java
-            )
-        )
-
-        Toast.makeText(
-            this,
-            "Wochenplan pausiert",
-            Toast.LENGTH_SHORT
-        ).show()
-
-        render()
+        requestScheduleChange(false)
     }
 
     private fun addDaySelector(
@@ -523,12 +623,16 @@ class MainActivity : Activity() {
 
                         textSize = 16f
                         gravity = Gravity.CENTER
+                        minimumHeight = dp(48)
+                        minimumWidth = dp(48)
+                        isSelected = selected
+                        contentDescription = "${dayLong(day)} auswählen"
 
                         setTextColor(
                             if (selected) {
-                                Color.WHITE
+                                colors.accent
                             } else {
-                                Color.rgb(55, 60, 69)
+                                colors.secondaryText
                             }
                         )
 
@@ -544,9 +648,9 @@ class MainActivity : Activity() {
                         background =
                             roundedBackground(
                                 if (selected) {
-                                    Color.rgb(51, 82, 235)
+                                    colors.elevated
                                 } else {
-                                    Color.WHITE
+                                    colors.surface
                                 },
                                 18f
                             )
@@ -703,7 +807,7 @@ class MainActivity : Activity() {
                 )
 
                 setTextColor(
-                    Color.rgb(40, 45, 54)
+                    colors.text
                 )
             }
 
@@ -726,7 +830,7 @@ class MainActivity : Activity() {
                 textSize = 16f
 
                 setTextColor(
-                    Color.rgb(24, 27, 32)
+                    colors.text
                 )
             }
 
@@ -740,7 +844,7 @@ class MainActivity : Activity() {
                 textSize = 12f
 
                 setTextColor(
-                    Color.rgb(115, 120, 129)
+                    colors.secondaryText
                 )
 
                 setPadding(
@@ -757,7 +861,7 @@ class MainActivity : Activity() {
         row.addView(
             time,
             LinearLayout.LayoutParams(
-                dp(58),
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
@@ -922,7 +1026,7 @@ class MainActivity : Activity() {
                 )
 
                 setTextColor(
-                    Color.rgb(58, 63, 72)
+                    colors.secondaryText
                 )
             }
 
@@ -932,7 +1036,7 @@ class MainActivity : Activity() {
                 textSize = 14f
 
                 setTextColor(
-                    Color.rgb(32, 36, 43)
+                    colors.text
                 )
 
                 setPadding(
@@ -946,7 +1050,7 @@ class MainActivity : Activity() {
         row.addView(
             time,
             LinearLayout.LayoutParams(
-                dp(56),
+                LinearLayout.LayoutParams.WRAP_CONTENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT
             )
         )
@@ -961,6 +1065,31 @@ class MainActivity : Activity() {
         )
 
         return row
+    }
+
+    private fun setThemeChoice(choice: ThemeChoice) {
+        navigation.theme = choice
+        themeStore.write(choice)
+        render()
+    }
+
+    private fun scheduleOneMinuteTestAlarm() {
+        if (!AlarmScheduler.canScheduleExact(this)) {
+            requestExactAlarmPermission()
+            return
+        }
+        runCatching { AlarmScheduler.scheduleTest(this, 1) }
+            .onSuccess {
+                Toast.makeText(this, "Testwecker für 1 Minute geplant", Toast.LENGTH_LONG).show()
+            }
+            .onFailure {
+                Toast.makeText(
+                    this,
+                    "Planung fehlgeschlagen. Berechtigungen und Verlauf prüfen.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        render()
     }
 
     private fun addSystemCard(
@@ -1101,7 +1230,7 @@ class MainActivity : Activity() {
                 textSize = 15f
 
                 setTextColor(
-                    Color.rgb(48, 53, 62)
+                    colors.secondaryText
                 )
             }
 
@@ -1118,9 +1247,9 @@ class MainActivity : Activity() {
 
                 setTextColor(
                     if (okay) {
-                        Color.rgb(25, 125, 75)
+                        colors.success
                     } else {
-                        Color.rgb(173, 78, 30)
+                        colors.warning
                     }
                 )
 
@@ -1144,30 +1273,7 @@ class MainActivity : Activity() {
         return row
     }
 
-    private fun cardContainer(
-        padding: Int =
-            dp(18)
-    ): LinearLayout =
-        LinearLayout(this).apply {
-            orientation =
-                LinearLayout.VERTICAL
-
-            setPadding(
-                padding,
-                padding,
-                padding,
-                padding
-            )
-
-            background =
-                roundedBackground(
-                    Color.WHITE,
-                    20f
-                )
-
-            elevation =
-                dp(1).toFloat()
-        }
+    private fun cardContainer(padding: Int = dp(18)): LinearLayout = R52Card(this, colors, padding)
 
     private fun sectionTitle(
         text: String
@@ -1182,7 +1288,7 @@ class MainActivity : Activity() {
             )
 
             setTextColor(
-                Color.rgb(24, 27, 32)
+                colors.text
             )
 
             setPadding(
@@ -1207,7 +1313,7 @@ class MainActivity : Activity() {
             )
 
             setTextColor(
-                Color.rgb(51, 82, 235)
+                colors.accent
             )
 
             setPadding(
@@ -1231,7 +1337,7 @@ class MainActivity : Activity() {
             )
 
             setTextColor(
-                Color.rgb(24, 27, 32)
+                colors.text
             )
         }
 
@@ -1243,7 +1349,7 @@ class MainActivity : Activity() {
             textSize = 14f
 
             setTextColor(
-                Color.rgb(100, 105, 114)
+                colors.secondaryText
             )
 
             setPadding(
@@ -1262,12 +1368,12 @@ class MainActivity : Activity() {
             textSize = 12f
 
             setTextColor(
-                Color.rgb(51, 82, 235)
+                colors.accent
             )
 
             background =
                 roundedBackground(
-                    Color.rgb(237, 240, 255),
+                    colors.elevated,
                     10f
                 )
 
@@ -1287,24 +1393,12 @@ class MainActivity : Activity() {
                 }
         }
 
-    private fun secondaryButton(
-        text: String
-    ): Button =
-        Button(this).apply {
-            this.text = text
-            isAllCaps = false
-            textSize = 14f
-
-            setTypeface(
-                typeface,
-                Typeface.BOLD
-            )
-        }
+    private fun secondaryButton(text: String): Button = R52Button(this, text, colors)
 
     private fun divider(): View =
         View(this).apply {
             setBackgroundColor(
-                Color.rgb(235, 237, 241)
+                colors.stroke
             )
 
             layoutParams =

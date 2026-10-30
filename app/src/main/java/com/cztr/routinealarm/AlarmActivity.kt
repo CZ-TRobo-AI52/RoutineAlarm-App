@@ -2,476 +2,170 @@ package com.cztr.routinealarm
 
 import android.app.Activity
 import android.content.Intent
-import android.graphics.Color
-import android.graphics.Typeface
-import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
-import android.view.Gravity
+import android.view.View
 import android.view.WindowManager
-import android.widget.Button
-import android.widget.LinearLayout
-import android.widget.Space
-import android.widget.TextView
+import android.widget.Toast
+import com.cztr.routinealarm.ui.alarm.AlarmScreenView
+import com.cztr.routinealarm.ui.alarm.AlarmUiAction
+import com.cztr.routinealarm.ui.alarm.AlarmUiInput
+import com.cztr.routinealarm.ui.alarm.AlarmUiMapper
+import com.cztr.routinealarm.ui.design.R52Colors
+import com.cztr.routinealarm.ui.shell.AppNavigationState
+import com.cztr.routinealarm.ui.shell.ThemePreferenceStore
 import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
-import java.util.Locale
 
 class AlarmActivity : Activity() {
     private var preparedSnooze: AlarmScheduler.PreparedSnooze? = null
+    private var preparedSnoozeMinutes: Int? = null
     private var invalidSavedSnooze = false
     private lateinit var originalAdmission: Intent
+    private lateinit var title: String
+    private lateinit var spokenText: String
 
     override fun onSaveInstanceState(outState: Bundle) {
-        if (invalidSavedSnooze) outState.putBundle("prepared_snooze", Bundle())
-        preparedSnooze?.let { outState.putBundle("prepared_snooze", it.toBundle()) }
+        if (invalidSavedSnooze) outState.putBundle(PREPARED_SNOOZE, Bundle())
+        preparedSnooze?.let { outState.putBundle(PREPARED_SNOOZE, it.toBundle()) }
+        preparedSnoozeMinutes?.let { outState.putInt(PREPARED_SNOOZE_MINUTES, it) }
         super.onSaveInstanceState(outState)
     }
 
-
-    override fun onCreate(
-        savedInstanceState: Bundle?
-    ) {
+    override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         originalAdmission = Intent(intent)
-        if (savedInstanceState?.containsKey("prepared_snooze") == true) {
-            preparedSnooze = savedInstanceState.getBundle("prepared_snooze")?.let {
+        if (savedInstanceState?.containsKey(PREPARED_SNOOZE) == true) {
+            preparedSnooze = savedInstanceState.getBundle(PREPARED_SNOOZE)?.let {
                 AlarmScheduler.PreparedSnooze.fromBundle(it)
             }
-            invalidSavedSnooze = preparedSnooze == null
+            preparedSnoozeMinutes = savedInstanceState.getInt(PREPARED_SNOOZE_MINUTES, -1)
+                .takeIf { it in 1..5 }
+            invalidSavedSnooze = preparedSnooze == null || preparedSnoozeMinutes == null
         }
-
         window.addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                 WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD or
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         )
-
-        val title =
-            intent.getStringExtra(
-                AlarmScheduler.EXTRA_TITLE
-            )
-                ?: "RoutineAlarm"
-
-        val spokenText =
-            intent.getStringExtra(
-                AlarmScheduler.EXTRA_SPOKEN_TEXT
-            )
-                ?: title
-
-        val now =
-            LocalDateTime.now()
-
-        val root =
-            LinearLayout(this).apply {
-                orientation =
-                    LinearLayout.VERTICAL
-
-                gravity =
-                    Gravity.CENTER_HORIZONTAL
-
-                setPadding(
-                    dp(24),
-                    dp(44),
-                    dp(24),
-                    dp(30)
-                )
-
-                setBackgroundColor(
-                    Color.rgb(
-                        247,
-                        248,
-                        250
-                    )
-                )
-            }
-
-        val clock =
-            TextView(this).apply {
-                text =
-                    now.format(
-                        DateTimeFormatter.ofPattern(
-                            "HH:mm",
-                            Locale.GERMAN
-                        )
-                    )
-
-                textSize =
-                    52f
-
-                gravity =
-                    Gravity.CENTER
-
-                setTextColor(
-                    Color.rgb(
-                        20,
-                        23,
-                        28
-                    )
-                )
-
-                setTypeface(
-                    typeface,
-                    Typeface.BOLD
-                )
-            }
-
-        val date =
-            TextView(this).apply {
-                text =
-                    now.format(
-                        DateTimeFormatter.ofPattern(
-                            "EEEE, d. MMMM",
-                            Locale.GERMAN
-                        )
-                    )
-                        .replaceFirstChar {
-                            it.titlecase(
-                                Locale.GERMAN
-                            )
-                        }
-
-                textSize =
-                    15f
-
-                gravity =
-                    Gravity.CENTER
-
-                setTextColor(
-                    Color.rgb(
-                        104,
-                        109,
-                        118
-                    )
-                )
-
-                setPadding(
-                    0,
-                    dp(2),
-                    0,
-                    dp(28)
-                )
-            }
-
-        val card =
-            LinearLayout(this).apply {
-                orientation =
-                    LinearLayout.VERTICAL
-
-                gravity =
-                    Gravity.CENTER_HORIZONTAL
-
-                setPadding(
-                    dp(22),
-                    dp(24),
-                    dp(22),
-                    dp(24)
-                )
-
-                background =
-                    roundedBackground(
-                        Color.WHITE,
-                        22
-                    )
-
-                elevation =
-                    dp(2).toFloat()
-            }
-
-        val label =
-            TextView(this).apply {
-                text =
-                    "JETZT"
-
-                textSize =
-                    12f
-
-                letterSpacing =
-                    0.12f
-
-                setTextColor(
-                    Color.rgb(
-                        51,
-                        82,
-                        235
-                    )
-                )
-
-                setTypeface(
-                    typeface,
-                    Typeface.BOLD
-                )
-            }
-
-        val task =
-            TextView(this).apply {
-                text =
-                    title
-
-                textSize =
-                    28f
-
-                gravity =
-                    Gravity.CENTER
-
-                setTextColor(
-                    Color.rgb(
-                        20,
-                        23,
-                        28
-                    )
-                )
-
-                setTypeface(
-                    typeface,
-                    Typeface.BOLD
-                )
-
-                setPadding(
-                    0,
-                    dp(12),
-                    0,
-                    0
-                )
-            }
-
-        card.addView(label)
-        card.addView(task)
-
-        if (
-            spokenText.isNotBlank() &&
-            spokenText != title
-        ) {
-            val spoken =
-                TextView(this).apply {
-                    text =
-                        spokenText
-
-                    textSize =
-                        16f
-
-                    gravity =
-                        Gravity.CENTER
-
-                    setTextColor(
-                        Color.rgb(
-                            95,
-                            100,
-                            109
-                        )
-                    )
-
-                    setPadding(
-                        0,
-                        dp(12),
-                        0,
-                        0
-                    )
-                }
-
-            card.addView(spoken)
-        }
-
-        val spacer =
-            Space(this)
-
-        val done =
-            actionButton(
-                "Erledigt",
-                primary = true
-            ).apply {
-                setOnClickListener {
-                    stopAlarm()
-                    finish()
-                }
-            }
-
-        val snooze =
-            actionButton(
-                "5 Minuten später",
-                primary = false
-            ).apply {
-                setOnClickListener {
-                    if (invalidSavedSnooze || !ScheduleState.isDeliveryAllowed(this@AlarmActivity, originalAdmission)) {
-                        finish()
-                        return@setOnClickListener
-                    }
-                    val request = preparedSnooze ?: AlarmScheduler.prepareSnooze(
-                        this@AlarmActivity, title, spokenText, 5, originalAdmission
-                    )?.also { preparedSnooze = it } ?: return@setOnClickListener
-                    // On an exception, effect is unknown: retain the exact request for a retry.
-                    val submitted = runCatching { AlarmScheduler.submitSnooze(this@AlarmActivity, request) }
-                        .getOrDefault(false)
-                    if (!submitted) return@setOnClickListener
-
-                    stopAlarm()
-                    finish()
-                }
-            }
-
-        val skip =
-            actionButton(
-                "Überspringen",
-                primary = false
-            ).apply {
-                setOnClickListener {
-                    stopAlarm()
-                    finish()
-                }
-            }
-
-        root.addView(clock)
-        root.addView(date)
-
-        root.addView(
-            card,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-        )
-
-        root.addView(
-            spacer,
-            LinearLayout.LayoutParams(
-                1,
-                0,
-                1f
-            )
-        )
-
-        root.addView(
-            done,
-            buttonParams(
-                top = 20
-            )
-        )
-
-        root.addView(
-            snooze,
-            buttonParams(
-                top = 10
-            )
-        )
-
-        root.addView(
-            skip,
-            buttonParams(
-                top = 10
-            )
-        )
-
-        setContentView(root)
+        title = intent.getStringExtra(AlarmScheduler.EXTRA_TITLE) ?: "RoutineAlarm"
+        spokenText = intent.getStringExtra(AlarmScheduler.EXTRA_SPOKEN_TEXT) ?: title
+        renderAlarm()
     }
 
-    private fun actionButton(
-        label: String,
-        primary: Boolean
-    ): Button =
-        Button(this).apply {
-            text =
-                label
+    @Deprecated("Platform back navigation")
+    override fun onBackPressed() {
+        handleAlarmUiAction(AlarmUiAction.CLOSE_SCREEN)
+    }
 
-            isAllCaps =
-                false
+    private fun renderAlarm() {
+        val theme = ThemePreferenceStore(this).read()
+        val colors = AppNavigationState(theme = theme).colors(resources.configuration)
+        val state = AlarmUiMapper.map(AlarmUiInput(
+            title = title,
+            spokenText = spokenText,
+            now = LocalDateTime.now(),
+            deliveryAllowed = !invalidSavedSnooze &&
+                ScheduleState.isDeliveryAllowed(this, originalAdmission),
+            pendingSnoozeMinutes = preparedSnoozeMinutes,
+            outputInstanceAvailable = originalAdmission
+                .getStringExtra(AlarmService.EXTRA_OUTPUT_INSTANCE)
+                ?.isNotBlank() == true,
+        ))
+        window.statusBarColor = colors.background
+        window.navigationBarColor = colors.background
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = if (colors == R52Colors.Light)
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else 0
+        setContentView(AlarmScreenView(this, state, colors, ::handleAlarmUiAction))
+    }
 
-            textSize =
-                17f
-
-            minHeight =
-                dp(58)
-
-            setTypeface(
-                typeface,
-                Typeface.BOLD
-            )
-
-            setTextColor(
-                if (
-                    primary
-                ) {
-                    Color.WHITE
-                } else {
-                    Color.rgb(
-                        40,
-                        45,
-                        54
-                    )
-                }
-            )
-
-            background =
-                roundedBackground(
-                    if (
-                        primary
-                    ) {
-                        Color.rgb(
-                            51,
-                            82,
-                            235
-                        )
-                    } else {
-                        Color.WHITE
-                    },
-                    16
-                )
+    private fun handleAlarmUiAction(action: AlarmUiAction) {
+        when (action) {
+            AlarmUiAction.CLOSE_SCREEN -> finish()
+            AlarmUiAction.CLOSE_OUTPUT -> {
+                stopAlarm()
+                finish()
+            }
+            AlarmUiAction.DONE -> {
+                stopAlarm()
+                finish()
+            }
+            AlarmUiAction.SKIP -> {
+                stopAlarm()
+                finish()
+            }
+            is AlarmUiAction.Snooze -> submitSnooze(action.minutes)
         }
+    }
 
-    private fun buttonParams(
-        top: Int
-    ): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            dp(58)
-        ).apply {
-            topMargin =
-                dp(top)
+    private fun submitSnooze(minutes: Int) {
+        if (invalidSavedSnooze || !ScheduleState.isDeliveryAllowed(this, originalAdmission)) {
+            Toast.makeText(this, "Diese Alarmausgabe ist nicht mehr aktuell.", Toast.LENGTH_LONG).show()
+            renderAlarm()
+            return
         }
-
-    private fun roundedBackground(
-        color: Int,
-        radiusDp: Int
-    ): GradientDrawable =
-        GradientDrawable().apply {
-            shape =
-                GradientDrawable.RECTANGLE
-
-            setColor(
-                color
-            )
-
-            cornerRadius =
-                dp(
-                    radiusDp
-                )
-                    .toFloat()
+        val existingMinutes = preparedSnoozeMinutes
+        if (preparedSnooze != null && existingMinutes != null && existingMinutes != minutes) {
+            Toast.makeText(
+                this,
+                "Vorherige Verschiebung unklar. Bitte $existingMinutes Minuten erneut versuchen.",
+                Toast.LENGTH_LONG,
+            ).show()
+            renderAlarm()
+            return
         }
+        val request = preparedSnooze ?: AlarmScheduler.prepareSnooze(
+            this,
+            title,
+            spokenText,
+            minutes,
+            originalAdmission,
+        )?.also {
+            preparedSnooze = it
+            preparedSnoozeMinutes = minutes
+        } ?: run {
+            Toast.makeText(this, "Verschiebung nicht autorisiert.", Toast.LENGTH_LONG).show()
+            renderAlarm()
+            return
+        }
+        val result = runCatching { AlarmScheduler.submitSnooze(this, request) }
+        if (result.isFailure) {
+            Toast.makeText(
+                this,
+                "Planungswirkung unklar. Bitte dieselbe Dauer erneut versuchen.",
+                Toast.LENGTH_LONG,
+            ).show()
+            renderAlarm()
+            return
+        }
+        if (!result.getOrDefault(false)) {
+            preparedSnooze = null
+            preparedSnoozeMinutes = null
+            Toast.makeText(
+                this,
+                "Die vorbereitete Verschiebung ist nicht mehr gültig. Aktuellen Zustand prüfen.",
+                Toast.LENGTH_LONG,
+            ).show()
+            renderAlarm()
+            return
+        }
+        stopAlarm()
+        finish()
+    }
 
     private fun stopAlarm() {
-        val stopIntent =
-            Intent(
-                this,
-                AlarmService::class.java
-            ).apply {
-                action =
-                    AlarmService.ACTION_STOP
-                putExtra(AlarmService.EXTRA_OUTPUT_INSTANCE,
-                    originalAdmission.getStringExtra(AlarmService.EXTRA_OUTPUT_INSTANCE))
-            }
-
-        startService(
-            stopIntent
-        )
+        val stopIntent = Intent(this, AlarmService::class.java).apply {
+            action = AlarmService.ACTION_STOP
+            putExtra(
+                AlarmService.EXTRA_OUTPUT_INSTANCE,
+                originalAdmission.getStringExtra(AlarmService.EXTRA_OUTPUT_INSTANCE),
+            )
+        }
+        startService(stopIntent)
     }
 
-    private fun dp(
-        value: Int
-    ): Int =
-        (
-            value *
-                resources
-                    .displayMetrics
-                    .density
-            )
-            .toInt()
+    companion object {
+        private const val PREPARED_SNOOZE = "prepared_snooze"
+        private const val PREPARED_SNOOZE_MINUTES = "prepared_snooze_minutes"
+    }
 }
