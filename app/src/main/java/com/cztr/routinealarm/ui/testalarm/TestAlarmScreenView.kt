@@ -60,7 +60,7 @@ class TestAlarmScreenView(
             }
             is TestAlarmUiState.Error -> {
                 root.addView(card().apply {
-                    addView(text("Verlauf nicht verfügbar", 24f, true))
+                    addView(text(state.title, 24f, true))
                     addView(text(state.message))
                     addView(button("Erneut versuchen", TestAlarmUiAction.RETRY))
                 })

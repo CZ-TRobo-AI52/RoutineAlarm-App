@@ -2,6 +2,7 @@ package com.cztr.routinealarm.execution
 
 import android.app.Activity
 import android.content.Intent
+import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import android.view.View
@@ -13,16 +14,29 @@ import com.cztr.routinealarm.ui.shell.ThemePreferenceStore
 import com.cztr.routinealarm.ui.testalarm.*
 import com.cztr.routinealarm.occurrence.*
 import java.time.ZoneId
+import java.time.Instant
 import java.time.format.DateTimeFormatter
 
 /** A normal history screen when no delivery is present; an identified alarm screen otherwise. */
 class TestAlarmActivity : Activity() {
+    private companion object {
+        const val PENDING_ACTION = "test-alarm.pending-action.v1"
+    }
     private var token: AlarmDelivery? = null
     private var tokenWasSupplied = false
     private var historyOffset = 0
     private var currentPage: TestAlarmHistoryPage? = null
     private val time = DateTimeFormatter.ofPattern("dd.MM. HH:mm:ss").withZone(ZoneId.systemDefault())
     private val reader = LatestUiLoader()
+    private var pendingAction: ExecutionAction? = null
+    private var invalidPendingAction = false
+    private var actionInFlight = false
+    private var historyCommandInFlight = false
+    private var screenRevision = 0L
+    private var viewRevision = 0L
+    private var stopped = false
+
+    private data class CommittedAction(val result: ActionResult, val followUpUnconfirmed: Boolean)
 
     private sealed class ReadResult {
         data class Active(val occurrence: RoutineOccurrence?) : ReadResult()
@@ -31,22 +45,44 @@ class TestAlarmActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        savedInstanceState?.getString(PENDING_ACTION)?.let { encoded ->
+            pendingAction = runCatching {
+                require(encoded.length <= 16_384)
+                OccurrenceCodec.decodeAction(encoded).also { StableTestAlarmActions.epoch(it) }
+            }.getOrElse { invalidPendingAction = true; null }
+        }
         readIntent(intent)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingAction?.let { outState.putString(PENDING_ACTION, OccurrenceCodec.encode(it)) }
+        super.onSaveInstanceState(outState)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        // Keep the frozen request on redelivery of the same token. A different delivery
+        // may not receive the earlier command's callback.
+        if (TestAlarmRuntime.token(intent) != token) {
+            pendingAction = null
+            invalidPendingAction = false
+            actionInFlight = false
+        }
         setIntent(intent)
         readIntent(intent)
     }
 
     override fun onResume() {
         super.onResume()
+        stopped = false
         TestAlarmRuntime.requestRecovery(this)
         render()
     }
 
     override fun onStop() {
+        stopped = true
+        screenRevision++
+        historyCommandInFlight = false
         reader.invalidate()
         super.onStop()
     }
@@ -57,6 +93,8 @@ class TestAlarmActivity : Activity() {
     }
 
     private fun readIntent(value: Intent) {
+        screenRevision++
+        historyCommandInFlight = false
         token = TestAlarmRuntime.token(value)
         tokenWasSupplied = value.data != null
         currentPage = null
@@ -76,6 +114,11 @@ class TestAlarmActivity : Activity() {
     }
 
     private fun openHistory() {
+        // Explicit screen navigation does not cancel an accepted command, but its late
+        // acknowledgement must not finish or repopulate the newly opened history.
+        pendingAction = null
+        invalidPendingAction = false
+        actionInFlight = false
         historyOffset = 0
         setIntent(Intent(this, javaClass))
         readIntent(intent)
@@ -84,6 +127,23 @@ class TestAlarmActivity : Activity() {
     private fun render() {
         val currentToken = token
         val requestedOffset = historyOffset
+        if (historyCommandInFlight) {
+            reader.invalidate()
+            show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))
+            return
+        }
+        val pending = pendingAction
+        if (invalidPendingAction || pending != null && !matchesDelivery(pending, currentToken)) {
+            reader.invalidate()
+            show(TestAlarmUiMapper.invalid())
+            return
+        }
+        if (pending != null) {
+            reader.invalidate()
+            if (actionInFlight) show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))
+            else showUnconfirmedAction()
+            return
+        }
         if (currentToken == null && tokenWasSupplied) {
             reader.invalidate()
             show(TestAlarmUiMapper.invalid())
@@ -165,13 +225,19 @@ class TestAlarmActivity : Activity() {
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = if (colors == com.cztr.routinealarm.ui.design.R52Colors.Light)
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else 0
-        setContentView(TestAlarmScreenView(this, state, colors, ::handleUiAction))
+        val renderedView = ++viewRevision
+        setContentView(TestAlarmScreenView(this, state, colors) { action ->
+            // Navigation has no execution authority. A detached view may not apply its
+            // action to a different delivery or to a newer history snapshot.
+            if (!stopped && !isFinishing && !isDestroyed && (renderedView == viewRevision ||
+                action == TestAlarmUiAction.CLOSE || action == TestAlarmUiAction.OPEN_HISTORY)) handleUiAction(action)
+        })
     }
 
     private fun handleUiAction(action: TestAlarmUiAction) {
         when (action) {
             TestAlarmUiAction.CLOSE -> finish()
-            TestAlarmUiAction.RETRY -> render()
+            TestAlarmUiAction.RETRY -> if (pendingAction != null) submitPendingAction() else render()
             TestAlarmUiAction.OPEN_HISTORY -> openHistory()
             TestAlarmUiAction.DONE -> token?.let { act(it, ActionType.DONE) }
             TestAlarmUiAction.SKIP -> token?.let { act(it, ActionType.SKIP) }
@@ -189,10 +255,12 @@ class TestAlarmActivity : Activity() {
     }
 
     private fun handleHistoryRow(action: TestAlarmUiAction.HistoryRow) {
+        if (stopped || historyCommandInFlight || pendingAction != null || isFinishing || isDestroyed) return
         val page = currentPage ?: return
         val item = page.items.firstOrNull { it.occurrence.id == action.id }?.occurrence ?: return
+        val expected = AlarmDelivery.from(item, page.deliveryEpoch)
         when (action.action) {
-            TestHistoryRowAction.ACTIVATE -> confirmActivation(item.id)
+            TestHistoryRowAction.ACTIVATE -> confirmActivation(expected)
             TestHistoryRowAction.OPEN -> {
                 runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
                 startActivity(TestAlarmRuntime.putToken(
@@ -200,59 +268,157 @@ class TestAlarmActivity : Activity() {
                     AlarmDelivery.from(item, page.deliveryEpoch),
                 ))
             }
-            TestHistoryRowAction.REPLAN -> runCatching { TestAlarmRuntime.schedule(this, item) }
-                .onSuccess { toast("Testwecker erneut geplant. Vergangene Weckzeiten lösen sofort aus.") }
-                .onFailure { showError(it) }
+            TestHistoryRowAction.REPLAN -> {
+                val app = applicationContext
+                runHistoryCommand(work = {
+                    TestAlarmRuntime.repository(app).use { repo ->
+                        check(repo.deliveryEpoch() == expected.epoch &&
+                            repo.get(item.id) == item && repo.isDeliveryAllowed(item.id)) {
+                            "History delivery is no longer current"
+                        }
+                    }
+                    TestAlarmRuntime.schedule(app, item)
+                }, saved = {
+                    toast("Testwecker erneut geplant. Vergangene Weckzeiten lösen sofort aus.")
+                }, failed = {
+                    toast("Planung nicht bestätigt. Aktuellen Testverlauf prüfen; gespeicherte Daten bleiben erhalten.")
+                })
+            }
         }
     }
 
-    private fun confirmActivation(id: String) {
+    private fun confirmActivation(expected: AlarmDelivery) {
         android.app.AlertDialog.Builder(this).setTitle("Testwecker aktivieren")
             .setMessage("Dieser übernommene Test wird wieder aktiv. Vergangene Weckzeiten und bereits ausgelöste Tests können sofort klingeln. Die übrigen übernommenen Tests bleiben pausiert.")
             .setNegativeButton("Abbrechen", null)
             .setPositiveButton("Aktivieren") { _, _ ->
-                try {
-                    val restored = TestAlarmRuntime.repository(this).use { repo ->
-                        check(repo.activateRestored(id)) { "Dieser Test wurde bereits aktiviert." }
-                        val item = requireNotNull(repo.get(id))
+                val app = applicationContext
+                runHistoryCommand(work = {
+                    val restored = TestAlarmRuntime.repository(app).use { repo ->
+                        check(repo.activateRestored(expected.occurrenceId, expected)) {
+                            "Captured restore confirmation is no longer current"
+                        }
+                        val item = requireNotNull(repo.get(expected.occurrenceId))
                         item to AlarmDelivery.from(item, repo.deliveryEpoch())
                     }
                     if (restored.first.status == OccurrenceStatus.TRIGGERED) {
-                        TestAlarmRuntime.refresh(this)
+                        TestAlarmRuntime.refresh(app)
+                    } else TestAlarmRuntime.schedule(app, restored.first)
+                    restored
+                }, saved = { restored ->
+                    if (restored.first.status == OccurrenceStatus.TRIGGERED) {
                         startActivity(TestAlarmRuntime.putToken(Intent(this, javaClass), restored.second))
-                    } else TestAlarmRuntime.schedule(this, restored.first)
+                    }
                     toast("Aktivierung gespeichert. Tatsächliche Alarmausgabe bitte prüfen.")
-                } catch (_: Exception) {
+                }, failed = {
                     toast("Aktivierung oder Planung nicht bestätigt. Aktuellen Verlauf prüfen; eine gespeicherte Aktivierung bleibt erhalten.")
-                }
-                render()
+                })
             }.show()
     }
 
-    private fun act(expected: AlarmDelivery, type: ActionType, snoozeMinutes: Int? = null) {
-        try {
-            val result = TestAlarmRuntime.repository(this).use {
-                TestAlarmRuntime.coordinator(it).act(expected, type, snoozeMinutes)
-            }
-            if (result?.outcome != Outcome.APPLIED) {
-                toast("Testwecker wurde bereits geändert. Bitte aktuellen Verlauf öffnen.")
-                render()
-                return
-            }
-            val scheduleError = if (type == ActionType.SNOOZE)
-                runCatching { TestAlarmRuntime.schedule(this, result.occurrence) }.exceptionOrNull() else null
-            TestAlarmRuntime.reconcileOccurrence(this, result.occurrence.id)
-            runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
-            if (scheduleError != null) {
-                toast("Verschiebung gespeichert, Planung fehlgeschlagen. Im Testverlauf erneut planen.")
-                openHistory()
-            } else {
-                toast("${TestAlarmRuntime.label(result.occurrence.status)} · gespeichert")
-                finish()
-            }
-        } catch (error: Exception) {
-            showError(error)
+    private fun <T> runHistoryCommand(work: () -> T, saved: (T) -> Unit, failed: (Throwable) -> Unit) {
+        if (stopped || historyCommandInFlight || pendingAction != null || isFinishing || isDestroyed) return
+        val request = screenRevision
+        historyCommandInFlight = true
+        reader.invalidate()
+        show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))
+        val admitted = reader.submit(work) { result ->
+            if (request != screenRevision || isFinishing || isDestroyed) return@submit
+            historyCommandInFlight = false
+            result.fold(onSuccess = saved, onFailure = {
+                android.util.Log.e("TestAlarm", "Verlaufsaktion nicht bestätigt", it)
+                failed(it)
+            })
+            if (request == screenRevision && !isFinishing && !isDestroyed) render()
         }
+        if (!admitted) {
+            historyCommandInFlight = false
+            failed(IllegalStateException("Screen I/O already closed"))
+            render()
+        }
+    }
+
+    private fun act(expected: AlarmDelivery, type: ActionType, snoozeMinutes: Int? = null) {
+        // A queued second tap cannot replace the request, its timestamp or its snooze duration.
+        if (stopped || isFinishing || isDestroyed || pendingAction != null || invalidPendingAction || token != expected) return
+        pendingAction = StableTestAlarmActions.freeze("test-user:${java.util.UUID.randomUUID()}",
+            expected, type, Instant.now(), snoozeMinutes)
+        submitPendingAction()
+    }
+
+    private fun submitPendingAction() {
+        val action = pendingAction ?: return
+        if (stopped || isFinishing || isDestroyed || actionInFlight || !matchesDelivery(action, token)) return
+        actionInFlight = true
+        reader.invalidate()
+        show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))
+        val app = applicationContext
+        val admitted = reader.submit({ commitAction(app, action) }) { answer ->
+            if (isFinishing || isDestroyed || pendingAction != action) return@submit
+            actionInFlight = false
+            // The original request remains available for an explicit journal retry on resume.
+            if (stopped) return@submit
+            answer.fold(onSuccess = { completed ->
+                pendingAction = null
+                when {
+                    completed.result.duplicate -> {
+                        toast("Aktion bereits gespeichert. Aktuellen Testverlauf prüfen; Ausgabe nicht erneut angefordert.")
+                        openHistory()
+                    }
+                    completed.result.outcome != Outcome.APPLIED -> {
+                        toast("Testwecker wurde bereits geändert. Bitte aktuellen Verlauf öffnen.")
+                        openHistory()
+                    }
+                    completed.followUpUnconfirmed -> {
+                        toast("Aktion gespeichert, anschließende Planung oder Ausgabe nicht bestätigt. Im Testverlauf prüfen.")
+                        openHistory()
+                    }
+                    else -> {
+                        toast("${TestAlarmRuntime.label(completed.result.occurrence.status)} · gespeichert")
+                        finish()
+                    }
+                }
+            }, onFailure = {
+                android.util.Log.e("TestAlarm", "Speicherung der unveränderten Aktion nicht bestätigt", it)
+                showUnconfirmedAction()
+            })
+        }
+        if (!admitted) {
+            actionInFlight = false
+            showUnconfirmedAction()
+        }
+    }
+
+    private fun commitAction(app: Context, action: ExecutionAction): CommittedAction {
+        val result = TestAlarmRuntime.repository(app).use {
+            StableTestAlarmActions(it, java.time.Clock.systemUTC()).submit(action)
+        }
+        // A historical journal result never grants another scheduling or output effect.
+        if (result.duplicate || result.outcome != Outcome.APPLIED) return CommittedAction(result, false)
+        val stillCurrent = TestAlarmRuntime.repository(app).use { repo ->
+            repo.deliveryEpoch() == StableTestAlarmActions.epoch(action) &&
+                repo.isDeliveryAllowed(action.occurrenceId) && repo.get(action.occurrenceId) == result.occurrence
+        }
+        if (!stillCurrent) return CommittedAction(result, true)
+        var unconfirmed = false
+        if (action.type == ActionType.SNOOZE) {
+            unconfirmed = runCatching { TestAlarmRuntime.schedule(app, result.occurrence) }.isFailure
+        }
+        TestAlarmRuntime.reconcileOccurrence(app, result.occurrence.id)
+        if (runCatching { TestAlarmRuntime.refresh(app) }.isFailure) unconfirmed = true
+        return CommittedAction(result, unconfirmed)
+    }
+
+    private fun matchesDelivery(action: ExecutionAction, delivery: AlarmDelivery?): Boolean =
+        delivery != null && runCatching {
+            AlarmDelivery(action.occurrenceId, action.expectedGeneration, action.expectedRevision,
+                StableTestAlarmActions.epoch(action)) == delivery
+        }.getOrDefault(false)
+
+    private fun showUnconfirmedAction() {
+        show(TestAlarmUiState.Error(
+            "Erneut versuchen prüft dieselbe Anfrage mit unveränderter Dauer. Eine bereits gespeicherte Aktion bleibt erhalten.",
+            title = "Aktion nicht bestätigt"))
     }
 
     private fun showError(error: Throwable) {
