@@ -50,7 +50,7 @@ class HomeActionsAndLayoutTest {
         button(a,"Testwecker öffnen").performClick()
         assertEquals(before,alarms.scheduledAlarms)
         assertTrue(views(a.window.decorView).single { it.contentDescription=="Mehr öffnen" }.isSelected)
-        assertNotNull(button(a,"TESTWECKER IN 1 MINUTE"))
+        assertNotNull(button(a,"Testwecker in 1 Minute"))
         assertFalse(ScheduleState.isEnabled(a))
         assertNull(shadowOf(a).nextStartedActivity)
     }
@@ -67,9 +67,9 @@ class HomeActionsAndLayoutTest {
             val event=RoutineEvent("long",setOf(now.dayOfWeek),10,0,
                 "Eine sehr lange persönliche Routine mit ausreichend Zeit für Frühstück und Vorbereitung",
                 category=EventCategory.MORNING,mode=EventMode.ROUTINE)
-            val state=HomeUiMapper.map(now,true,true,listOf(event))
+            val state=HomeUiMapper.map(HomeProjectionSource.from(now,true,true,listOf(event)))
             for(colors in listOf(R52Colors.Dark,R52Colors.Light)) {
-                val home=HomeScreenView(context,state,colors,{},{})
+                val home=HomeScreenView(context,state,colors,{})
                 val width=(280*context.resources.displayMetrics.density).toInt() //320dp viewport minus shell padding
                 home.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),
                     View.MeasureSpec.makeMeasureSpec(0,View.MeasureSpec.UNSPECIFIED))

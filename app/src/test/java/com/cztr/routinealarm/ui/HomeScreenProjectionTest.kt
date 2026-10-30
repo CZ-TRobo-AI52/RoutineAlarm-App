@@ -63,6 +63,25 @@ class HomeScreenProjectionTest {
             assertNull(shadowOf(a).nextStartedActivity)
         }
     }
+    @Test fun historyQuickActionOnlyNavigatesAndKeepsPausedPlan() = withHome { a ->
+        views(a.window.decorView).filterIsInstance<Button>().single { it.text == "Verlauf öffnen" }.performClick()
+        assertFalse(ScheduleState.isEnabled(a))
+        assertNotNull(shadowOf(a).nextStartedActivity)
+    }
+
+    @Test fun homeQuickActionsRemainReachableAtTwoHundredPercentFontScale() {
+        RuntimeEnvironment.setFontScale(2f)
+        try {
+            withHome { a ->
+                val action = views(a.window.decorView).filterIsInstance<Button>().single { it.text == "Verlauf öffnen" }
+                assertTrue(action.minimumHeight >= (48 * a.resources.displayMetrics.density).toInt())
+                assertNull(action.ellipsize)
+            }
+        } finally {
+            RuntimeEnvironment.setFontScale(1f)
+        }
+    }
+
     @Test fun showAllOnlyNavigatesAndKeepsPausedPlan() = withHome { a ->
         views(a.window.decorView).filterIsInstance<Button>().single { it.text=="Alle anzeigen" }.performClick()
         assertTrue(views(a.window.decorView).single { it.contentDescription=="Plan öffnen" }.isSelected)

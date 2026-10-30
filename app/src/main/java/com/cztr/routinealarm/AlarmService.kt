@@ -24,6 +24,22 @@ class AlarmService :
     TextToSpeech.OnInitListener {
 
     companion object {
+        @Volatile private var live = java.lang.ref.WeakReference<AlarmService>(null)
+
+        /** Existing live output only. A delayed pause cannot stop a replacement instance. */
+        internal fun stopWeeklyOutput(@Suppress("UNUSED_PARAMETER") context: Context, epoch: String) {
+            val service = live.get() ?: return
+            val instance = service.activeOutputInstance ?: return
+            // Confirmed pause owns this captured identity even after global re-enable.
+            service.handler.post {
+                val admission = service.currentAdmission
+                if (service.activeOutputInstance == instance &&
+                    admission?.getBooleanExtra(AlarmScheduler.EXTRA_RECURRING, false) == true &&
+                    (admission.getStringExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION)
+                        ?: "before-first-restore") == epoch) service.stopAlarm()
+            }
+        }
+
         const val ROUTINE_CHANNEL_ID =
             "routine_alarm_channel"
 
@@ -43,7 +59,7 @@ class AlarmService :
     private var ttsReady = false
     private var hasPayload = false
     private var currentAdmission: Intent? = null
-    private var activeOutputInstance: String? = null
+    @Volatile private var activeOutputInstance: String? = null
     private var activeAnnouncementId: String? = null
     private var announcementSequence = 0L
 
@@ -82,6 +98,7 @@ class AlarmService :
 
     override fun onCreate() {
         super.onCreate()
+        live = java.lang.ref.WeakReference(this)
 
         createNotificationChannels()
 
@@ -499,6 +516,7 @@ class AlarmService :
     }
 
     override fun onDestroy() {
+        if (live.get() === this) live.clear()
         hasPayload = false
         currentAdmission = null
         activeOutputInstance = null

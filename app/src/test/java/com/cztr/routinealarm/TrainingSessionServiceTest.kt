@@ -48,6 +48,8 @@ class TrainingSessionServiceTest {
     @Implements(TextToSpeech::class)
     class ControlledTextToSpeech : ShadowTextToSpeech() {
         val requests = mutableListOf<Spoken>()
+        var stopCalls = 0
+        @Implementation override fun stop(): Int { stopCalls++; return super.stop() }
 
         @Implementation
         override fun speak(text: CharSequence, queueMode: Int, params: Bundle?, utteranceId: String?): Int {
@@ -278,4 +280,159 @@ class TrainingSessionServiceTest {
         main.idle()
         assertStopped()
     }
+    private val app get() = org.robolectric.RuntimeEnvironment.getApplication()
+    private fun weeklyDelivery(training: Boolean = true): Intent {
+        ScheduleState.setEnabled(app, true)
+        org.robolectric.shadows.ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        val event = ScheduleRegistry.enabledEvents.first {
+            TrainingSessionPlan.isStartEvent(it.id) == training &&
+                (!training || it.daysOfWeek.contains(DayOfWeek.MONDAY))
+        }
+        AlarmReceiver().onReceive(app, Intent(app, AlarmReceiver::class.java)
+            .putExtra(AlarmScheduler.EXTRA_RECURRING, true)
+            .putExtra(AlarmScheduler.EXTRA_EVENT_ID, event.id)
+            .putExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(app)))
+        return requireNotNull(shadowOf(app).nextStartedService)
+    }
+    private fun awaitPauseWorker() {
+        ScheduleState.requestEnabled(app, false) {}
+        val f = ScheduleState::class.java.declaredFields.single {
+            java.util.concurrent.ExecutorService::class.java.isAssignableFrom(it.type)
+        }.apply { isAccessible = true }
+        (f.get(null) as java.util.concurrent.ExecutorService).submit {}.get(10, java.util.concurrent.TimeUnit.SECONDS)
+    }
+    private fun alarmIntent(text: String) = Intent(app, AlarmService::class.java)
+        .putExtra(AlarmScheduler.EXTRA_RECURRING, false)
+        .putExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(app))
+        .putExtra(AlarmScheduler.EXTRA_SPOKEN_TEXT, text)
+    private fun alarmSpeech(): ControlledTextToSpeech =
+        Shadow.extract(requireNotNull(ShadowTextToSpeech.getLastTextToSpeechInstance()))
+
+    @Test fun weeklyReceiverPreservesTrainingAdmission() {
+        val delivered = weeklyDelivery()
+        assertEquals(TrainingSessionService::class.java.name, delivered.component!!.className)
+        assertTrue("P1_RED: receiver lost weekly admission", delivered.getBooleanExtra(AlarmScheduler.EXTRA_RECURRING, false))
+        assertEquals(ScheduleState.restoreGeneration(app),
+            delivered.getStringExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION))
+        assertNotNull(delivered.getStringExtra(AlarmScheduler.EXTRA_EVENT_ID))
+    }
+    @Test fun confirmedPauseStopsWeeklyTrainingAndPreservesConcurrentExplicitAlarm() {
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1); ready(); main.runToNextTask()
+        val weeklyBefore = speech.requests.toList(); val weeklyStops = speech.stopCalls
+        val alarm = Robolectric.buildService(AlarmService::class.java).create()
+        val explicit = alarmSpeech()
+        try {
+            alarm.get().onStartCommand(alarmIntent("Explicit isolated output"), 0, 1)
+            explicit.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle()
+            val explicitStops = explicit.stopCalls
+            awaitPauseWorker(); main.idle()
+            assertTrue("P1_RED: confirmed pause left weekly training alive", shadowOf(service).isStoppedBySelf)
+            assertTrue(speech.stopCalls > weeklyStops)
+            assertEquals(explicitStops, explicit.stopCalls)
+            assertFalse(shadowOf(alarm.get()).isStoppedBySelf)
+            main.idleFor(Duration.ofMinutes(5))
+            assertEquals(weeklyBefore, speech.requests)
+            assertTrue(explicit.requests.size > 1)
+        } finally { alarm.destroy() }
+    }
+    @Test fun confirmedPauseImmediatelyStopsWeeklyAlarmSpeech() {
+        val alarm = Robolectric.buildService(AlarmService::class.java).create()
+        val spoken = alarmSpeech()
+        try {
+            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1)
+            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle()
+            val before = spoken.requests.toList(); val stops = spoken.stopCalls
+            awaitPauseWorker(); main.idle()
+            assertTrue("P1_RED: weekly alarm waits for repeat instead of stop", shadowOf(alarm.get()).isStoppedBySelf)
+            assertTrue(spoken.stopCalls > stops)
+            main.idleFor(Duration.ofSeconds(30)); assertEquals(before, spoken.requests)
+        } finally { alarm.destroy() }
+    }
+    @Test fun delayedWeeklyStopCannotStopExplicitTrainingReplacement() {
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1); ready()
+        awaitPauseWorker() // Pause acknowledged, but its main-thread stops are not drained.
+        start(DayOfWeek.TUESDAY)
+        val stops = speech.stopCalls
+        main.idle()
+        assertFalse(shadowOf(service).isStoppedBySelf)
+        assertEquals(stops, speech.stopCalls)
+        main.runToNextTask(); assertTrue(speech.requests.isNotEmpty())
+    }
+    @Test fun delayedWeeklyStopCannotStopReenabledWeeklyTrainingReplacement() {
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1); ready()
+        awaitPauseWorker()
+        service.onStartCommand(weeklyDelivery(), 0, 2)
+        val stops = speech.stopCalls
+        main.idle(); assertFalse(shadowOf(service).isStoppedBySelf)
+        assertEquals(stops, speech.stopCalls)
+    }
+    @Test fun confirmedPauseBeforeTrainingInitCannotResurrectCues() {
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1)
+        awaitPauseWorker(); main.idle(); ready(); main.idleFor(Duration.ofHours(2))
+        assertTrue("P1_RED: weekly training survived pause before TTS ready", shadowOf(service).isStoppedBySelf)
+        assertTrue(speech.requests.isEmpty())
+    }
+    @Test fun restoreBeforeTrainingInitRevokesOriginalAdmission() {
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1)
+        ScheduleState.disableAfterRestore(app); ready()
+        assertTrue("P1_RED: training ignored original restore generation", shadowOf(service).isStoppedBySelf)
+        main.idleFor(Duration.ofHours(2)); assertTrue(speech.requests.isEmpty())
+    }
+    @Test fun delayedWeeklyStopCannotStopExplicitAlarmReplacement() {
+        val alarm = Robolectric.buildService(AlarmService::class.java).create()
+        val spoken = alarmSpeech()
+        try {
+            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1)
+            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle()
+            awaitPauseWorker()
+            alarm.get().onStartCommand(alarmIntent("Replacement explicit"), 0, 2)
+            val stops = spoken.stopCalls
+            main.idle()
+            assertFalse(shadowOf(alarm.get()).isStoppedBySelf)
+            assertEquals(stops, spoken.stopCalls)
+            assertEquals("Replacement explicit", spoken.requests.last().text)
+        } finally { alarm.destroy() }
+    }
+
+    private fun awaitPauseAndEnableWithoutMainDrain() {
+        ScheduleState.requestEnabled(app, false) {}
+        ScheduleState.requestEnabled(app, true) {}
+        val field = ScheduleState::class.java.declaredFields.single {
+            java.util.concurrent.ExecutorService::class.java.isAssignableFrom(it.type)
+        }.apply { isAccessible = true }
+        (field.get(null) as java.util.concurrent.ExecutorService).submit {}
+            .get(10, java.util.concurrent.TimeUnit.SECONDS)
+        assertTrue("Both ordered commits must finish enabled before old stop is dispatched",
+            ScheduleState.isEnabled(app))
+    }
+    @Test fun confirmedPauseStillClosesOldWeeklyAlarmAfterEnable() {
+        val alarm = Robolectric.buildService(AlarmService::class.java).create()
+        val spoken = alarmSpeech()
+        try {
+            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1)
+            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle()
+            val instance = org.robolectric.util.ReflectionHelpers.getField<String>(alarm.get(), "activeOutputInstance")
+            val before = spoken.requests.toList(); val stops = spoken.stopCalls
+            awaitPauseAndEnableWithoutMainDrain()
+            assertEquals(instance, org.robolectric.util.ReflectionHelpers.getField<String>(alarm.get(), "activeOutputInstance"))
+            main.idle()
+            assertTrue("V3_RED: re-enable revoked confirmed stop of same alarm instance",
+                shadowOf(alarm.get()).isStoppedBySelf)
+            assertTrue(spoken.stopCalls > stops)
+            main.idleFor(Duration.ofSeconds(30)); assertEquals(before, spoken.requests)
+        } finally { alarm.destroy() }
+    }
+    @Test fun confirmedPauseStillClosesOldWeeklyTrainingAfterEnable() {
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1); ready(); main.runToNextTask()
+        val session = org.robolectric.util.ReflectionHelpers.getField<String>(service, "sessionId")
+        val before = speech.requests.toList(); val stops = speech.stopCalls
+        awaitPauseAndEnableWithoutMainDrain()
+        assertEquals(session, org.robolectric.util.ReflectionHelpers.getField<String>(service, "sessionId"))
+        main.idle()
+        assertTrue("V3_RED: re-enable revoked confirmed stop of same training session",
+            shadowOf(service).isStoppedBySelf)
+        assertTrue(speech.stopCalls > stops)
+        main.idleFor(Duration.ofMinutes(5)); assertEquals(before, speech.requests)
+    }
+
 }

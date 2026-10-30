@@ -11,6 +11,7 @@ import android.net.Uri
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.TextView
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -63,6 +64,10 @@ class LegacySnoozeRequestContractTest {
         else -> emptyList()
     }
     private fun snooze(activity: AlarmActivity) = buttons(activity.window.decorView).single { it.text == "5 Minuten später" }
+    private fun labels(view: View): List<String> =
+        (if (view is TextView) listOf(view.text.toString()) else emptyList()) +
+            if (view is ViewGroup) (0 until view.childCount).flatMap { labels(view.getChildAt(it)) }
+            else emptyList()
 
     @Test fun distinctRequestsNeverOverwriteOneAnother() {
         repeat(64) { AlarmScheduler.scheduleSnooze(context, "Request-$it", "Speech-$it") }
@@ -90,7 +95,7 @@ class LegacySnoozeRequestContractTest {
         val saved = Bundle()
         first.saveInstanceState(saved).pause().stop().destroy()
         val second = Robolectric.buildActivity(AlarmActivity::class.java, original).create(saved).start().resume().visible()
-        snooze(second.get()).performClick()
+        buttons(second.get().window.decorView).single { it.text == "5 Min. erneut" }.performClick()
         assertEquals("Recreation is a retry, not a new alarm", 1, shadowOf(manager).scheduledAlarms.size)
         val after = shadowOf(manager).scheduledAlarms.single()
         assertEquals(before.operation, after.operation)
@@ -108,7 +113,12 @@ class LegacySnoozeRequestContractTest {
         assertEquals(original.getStringExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION), delivery.getStringExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION))
         ScheduleState.disableAfterRestore(context)
         val screen = Robolectric.buildActivity(AlarmActivity::class.java, delivery).setup()
-        snooze(screen.get()).performClick()
+        assertTrue("Revoked admission must be visible", labels(screen.get().window.decorView)
+            .any { it.contains("nicht mehr autorisiert") })
+        assertTrue("Revoked screen must not offer an active or retry Snooze action",
+            buttons(screen.get().window.decorView).none {
+                it.text.toString().endsWith("später") || it.text.toString().endsWith("Min. erneut")
+            })
         assertTrue(shadowOf(manager).scheduledAlarms.isEmpty())
         assertNull(shadowOf(context).nextStartedService)
         screen.pause().stop().destroy()

@@ -4,6 +4,7 @@ import android.content.Context
 import android.view.Gravity
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
+import com.cztr.routinealarm.ui.accessibility.R52Accessibility
 import com.cztr.routinealarm.ui.design.*
 import com.cztr.routinealarm.ui.shell.AppDestination
 
@@ -42,6 +43,7 @@ class R52BottomNav(context: Context, selected: AppDestination, colors: R52Colors
             val button = R52Button(context, destination.label, colors).apply {
                 contentDescription = "${destination.label} öffnen"
                 isSelected = destination == selected
+                R52Accessibility.state(this, if (isSelected) "Ausgewählt" else "Nicht ausgewählt")
                 setTextColor(if (isSelected) colors.accent else colors.secondaryText)
                 textSize = R52Typography.SECONDARY
                 ellipsize = null

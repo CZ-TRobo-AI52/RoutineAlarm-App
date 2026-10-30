@@ -32,12 +32,16 @@ class BackupNavigationTest {
         try {
             awaitUi(activity.get())
             // The user-approved five-destination shell groups system tools under More.
-            buttons(activity.get().window.decorView).single { it.contentDescription == "Mehr öffnen" }.performClick()
+            val nav = activity.get().window.decorView.let { root ->
+                fun find(view: View): List<View> = listOf(view) + if (view is ViewGroup)
+                    (0 until view.childCount).flatMap { find(view.getChildAt(it)) } else emptyList()
+                find(root).filterIsInstance<com.cztr.routinealarm.ui.components.R52BottomNav>().single()
+            }
+            buttons(nav).single { it.text == "Mehr" }.performClick()
             assertNull("Navigation alone must not start backup", shadowOf(activity.get()).nextStartedActivity)
             val button = buttons(activity.get().window.decorView)
-                .firstOrNull { it.text == "Ereignisverlauf sichern / laden" }
-            assertNotNull("Backup must be reachable through the dashboard More destination", button)
-            button!!.performClick()
+                .single { it.text == "Ereignisverlauf sichern / laden" }
+            button.performClick()
             assertEquals("com.cztr.routinealarm.backup.BackupActivity",
                 shadowOf(activity.get()).nextStartedActivity.component!!.className)
         } finally { activity.destroy(); awaitUiReadersStopped(activity.get()) }

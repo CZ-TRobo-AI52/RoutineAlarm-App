@@ -14,6 +14,7 @@ import com.cztr.routinealarm.ScheduleState
 import com.cztr.routinealarm.ui.components.R52BottomNav
 import com.cztr.routinealarm.ui.design.R52Colors
 import com.cztr.routinealarm.ui.shell.AppDestination
+import com.cztr.routinealarm.ui.shell.ThemePreferenceStore
 import com.cztr.routinealarm.execution.TestAlarmActivity
 import com.cztr.routinealarm.execution.TestAlarmRuntime
 import com.cztr.routinealarm.support.awaitUi
@@ -41,6 +42,7 @@ class MainShellNavigationTest {
         app.deleteDatabase("occurrences.db")
         ScheduleState.setEnabled(app, false)
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        app.getSharedPreferences(ThemePreferenceStore.PREFERENCES_NAME, Context.MODE_PRIVATE).edit().clear().commit()
     }
 
     @Test fun fiveDestinationsHaveAccessibleTargetsAndOneSelection() = withMain { a ->
@@ -92,6 +94,17 @@ class MainShellNavigationTest {
         assertFalse(ScheduleState.isEnabled(a))
     }
 
+    @Test fun selectedThemeSurvivesAFreshActivityWithoutSavedState() {
+        withMain { a ->
+            destination(a, "Mehr").performClick()
+            views(a.window.decorView).filterIsInstance<Button>().single { it.text == "Helles Design" }.performClick()
+        }
+        withMain { a ->
+            val shell = views(a.window.decorView).single { it.tag == "r52_shell" }
+            assertEquals(Color.parseColor("#F5F8FB"), (shell.background as ColorDrawable).color)
+        }
+    }
+
     @Test fun backFromPlanReturnsHomeWithoutChangingSchedule() = withMain { a ->
         destination(a, "Plan").performClick()
         @Suppress("DEPRECATION") a.onBackPressed()
@@ -138,8 +151,10 @@ class MainShellNavigationTest {
         try { awaitUi(controller.get()); check(controller.get()) }
         finally { controller.pause().stop().destroy(); awaitUiReadersStopped(controller.get()) }
     }
-    private fun destination(a: Activity, title: String): Button = views(a.window.decorView)
-        .filterIsInstance<Button>().single { it.contentDescription == "$title öffnen" }
+    private fun destination(a: Activity, title: String): Button {
+        val nav = views(a.window.decorView).filterIsInstance<R52BottomNav>().single()
+        return views(nav).filterIsInstance<Button>().single { it.contentDescription == "$title öffnen" }
+    }
     private fun labels(a: Activity) = views(a.window.decorView).filterIsInstance<TextView>().map { it.text.toString() }
     private fun views(v: View): List<View> = listOf(v) + if (v is ViewGroup)
         (0 until v.childCount).flatMap { views(v.getChildAt(it)) } else emptyList()
