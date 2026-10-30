@@ -96,38 +96,41 @@ object ScheduleState {
         val app = context.applicationContext
         val current = state(app)
         val epoch = restoreGeneration(app)
-        val request = current.sequence.incrementAndGet()
-        current.requested = enabled
-        current.pending.incrementAndGet()
-        publish(app)
-        writes.execute {
-            val result = runCatching {
-                synchronized(transitionLock) {
-                    check(epoch == restoreGeneration(app)) { "Request predates restore" }
-                    check(!enabled || AlarmScheduler.canScheduleExact(app)) { "Exact alarm permission missing" }
-                    setEnabled(app, enabled)
-                    if (enabled) {
-                        if (current.sequence.get() == request) AlarmScheduler.scheduleAll(app) else 0
-                    } else {
-                        // Weekly registrations only; no global output stop for an explicit one-shot.
-                        AlarmScheduler.cancelAll(app)
-                        AlarmService.stopWeeklyOutput(app, epoch)
-                        TrainingSessionService.stopWeeklyOutput(app, epoch)
-                        0
+        // Keep sequence assignment and executor admission in the same order.
+        synchronized(current) {
+            val request = current.sequence.incrementAndGet()
+            current.requested = enabled
+            current.pending.incrementAndGet()
+            writes.execute {
+                val result = runCatching {
+                    synchronized(transitionLock) {
+                        check(epoch == restoreGeneration(app)) { "Request predates restore" }
+                        check(!enabled || AlarmScheduler.canScheduleExact(app)) { "Exact alarm permission missing" }
+                        setEnabled(app, enabled)
+                        if (enabled) {
+                            if (current.sequence.get() == request) AlarmScheduler.scheduleAll(app) else 0
+                        } else {
+                            // Weekly registrations only; no global output stop for an explicit one-shot.
+                            AlarmScheduler.cancelAll(app)
+                            AlarmService.stopWeeklyOutput(app, epoch)
+                            TrainingSessionService.stopWeeklyOutput(app, epoch)
+                            0
+                        }
                     }
                 }
-            }
-            if (current.sequence.get() == request) {
-                if (result.isFailure) current.uncertain = true
-                current.error = if (result.isFailure)
-                    "Wochenplanstatus nicht bestätigt. Bitte Speicherung erneut versuchen." else null
-            }
-            current.pending.decrementAndGet()
-            publish(app)
-            Handler(Looper.getMainLooper()).post {
-                if (current.sequence.get() == request) reply(result)
+                if (current.sequence.get() == request) {
+                    if (result.isFailure) current.uncertain = true
+                    current.error = if (result.isFailure)
+                        "Wochenplanstatus nicht bestätigt. Bitte Speicherung erneut versuchen." else null
+                }
+                current.pending.decrementAndGet()
+                publish(app)
+                Handler(Looper.getMainLooper()).post {
+                    if (current.sequence.get() == request) reply(result)
+                }
             }
         }
+        publish(app)
     }
 
     /** Restore invalidates queued old-epoch commands as well as deliveries. */

@@ -19,7 +19,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.Implementation
+import org.robolectric.annotation.Implements
 import org.robolectric.annotation.LooperMode
+import org.robolectric.annotation.RealObject
 import org.robolectric.shadows.ShadowAlarmManager
 import org.robolectric.util.ReflectionHelpers
 import java.nio.file.Files
@@ -27,6 +30,7 @@ import java.nio.file.attribute.PosixFilePermission
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import java.io.File
 import java.io.IOException
 
@@ -35,6 +39,23 @@ import java.io.IOException
 @Config(sdk = [28, 31])
 @LooperMode(LooperMode.Mode.PAUSED)
 class WeeklyToggleDurabilityTest {
+    @Implements(Handler::class)
+    class ConcurrentPublishHandler {
+        @RealObject lateinit var handler: Handler
+        @Implementation fun post(task: Runnable): Boolean {
+            if (Thread.currentThread().name == pausedThread) {
+                publishReached.countDown()
+                check(releasePublish.await(10, TimeUnit.SECONDS)) { "Publish gate timed out" }
+            }
+            return handler.postDelayed(task, 0L)
+        }
+        companion object {
+            @Volatile var pausedThread: String? = null
+            var publishReached = CountDownLatch(1)
+            var releasePublish = CountDownLatch(1)
+        }
+    }
+
     private val app get() = RuntimeEnvironment.getApplication()
     private val prefs get() = app.getSharedPreferences("routinealarm_schedule", Context.MODE_PRIVATE)
     private val manager get() = app.getSystemService(AlarmManager::class.java)
@@ -246,5 +267,52 @@ class WeeklyToggleDurabilityTest {
     @Test fun successorReceivesSuccessfulPauseWithoutAnotherResume() = rotatedWrite(false, false)
     @Test fun successorReceivesFailedEnableWithoutAnotherResume() = rotatedWrite(true, true)
     @Test fun successorReceivesFailedPauseWithoutAnotherResume() = rotatedWrite(false, true)
+
+    private fun concurrentLatestRequestWins(latestEnabled: Boolean) {
+        val ready = CountDownLatch(1)
+        val releaseWorker = CountDownLatch(1)
+        val executor = requireNotNull(worker())
+        val heldWorker = executor.submit {
+            ready.countDown()
+            check(releaseWorker.await(10, TimeUnit.SECONDS)) { "Worker gate timed out" }
+        }
+        assertTrue(ready.await(5, TimeUnit.SECONDS))
+        ConcurrentPublishHandler.publishReached = CountDownLatch(1)
+        ConcurrentPublishHandler.releasePublish = CountDownLatch(1)
+        ConcurrentPublishHandler.pausedThread = "c6-first-weekly-request"
+        val firstFailure = AtomicReference<Throwable?>()
+        val latestReply = AtomicReference<Result<Int>?>()
+        val first = Thread({
+            try { ScheduleState.requestEnabled(app, !latestEnabled) {} }
+            catch (error: Throwable) { firstFailure.set(error) }
+        }, "c6-first-weekly-request")
+        try {
+            first.start()
+            assertTrue("First request must reach the gated real Handler.post",
+                ConcurrentPublishHandler.publishReached.await(5, TimeUnit.SECONDS))
+            ScheduleState.requestEnabled(app, latestEnabled) { latestReply.set(it) }
+        } finally {
+            ConcurrentPublishHandler.releasePublish.countDown()
+            first.join(10000)
+            ConcurrentPublishHandler.pausedThread = null
+            releaseWorker.countDown()
+            heldWorker.get(10, TimeUnit.SECONDS)
+            drain()
+        }
+        assertFalse("Caller must terminate", first.isAlive)
+        assertNull(firstFailure.get())
+        assertTrue("Latest request must receive its real completion", latestReply.get()?.isSuccess == true)
+        assertEquals("Sequence assignment and executor admission must have one order",
+            latestEnabled, diskEnabled())
+        assertEquals(latestEnabled, ScheduleState.isEnabled(app))
+        assertEquals(latestEnabled, shadowOf(manager).scheduledAlarms.isNotEmpty())
+        shadowOf(manager).scheduledAlarms.toList().forEach { it.operation?.let { p -> manager.cancel(p); p.cancel() } }
+    }
+
+    @Test @Config(shadows = [ConcurrentPublishHandler::class])
+    fun concurrentLatestEnableWinsEvenWhenEarlierPausePublisherStalls() = concurrentLatestRequestWins(true)
+
+    @Test @Config(shadows = [ConcurrentPublishHandler::class])
+    fun concurrentLatestPauseWinsEvenWhenEarlierEnablePublisherStalls() = concurrentLatestRequestWins(false)
 
 }
