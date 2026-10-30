@@ -16,7 +16,7 @@ object BackupUiMapper {
             securityWarning =
                 "Die Datei ist unverschlüsselt und kann Titel sowie gesprochene Texte enthalten. Wähle einen privaten Speicherort.",
             restoreBoundary =
-                "Wiederherstellung ist nur in einen leeren Ereignisspeicher möglich. Testwecker werden einzeln aktiviert; persönliche Ereignisse bleiben in diesem Stand gesperrt.",
+                "Wiederherstellung ist nur in einen leeren Ereignisspeicher möglich. Testwecker bleiben nach dem Import pausiert und werden einzeln aktiviert; persönliche Ereignisse bleiben in diesem Stand gesperrt.",
             status = status,
             saveEnabled = !input.busy,
             loadEnabled = !input.busy,
