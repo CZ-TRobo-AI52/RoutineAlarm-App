@@ -2,6 +2,7 @@ package com.cztr.routinealarm.ui.studio
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -40,7 +41,24 @@ class StudioScreenView(
             addView(text("Dieser Stand liest den bestehenden Wochenplan. Er verändert keine Routine und erzeugt keine neue Planung.", 14f))
         })
 
-        addView(HorizontalScrollView(context).apply {
+        addView(object : HorizontalScrollView(context) {
+            private var alignedViewportWidth = 0
+            private val selectedBounds = Rect()
+
+            override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+                super.onLayout(changed, left, top, right, bottom)
+                if (width <= 0 || width == alignedViewportWidth) return
+                val row = getChildAt(0) as? LinearLayout ?: return
+                for (index in 0 until row.childCount) {
+                    val selected = row.getChildAt(index)
+                    if (!selected.isSelected) continue
+                    selectedBounds.set(selected.left, selected.top, selected.right, selected.bottom)
+                    requestChildRectangleOnScreen(row, selectedBounds, true)
+                    alignedViewportWidth = width
+                    break
+                }
+            }
+        }.apply {
             isHorizontalScrollBarEnabled = false
             addView(LinearLayout(context).apply {
                 orientation = HORIZONTAL
