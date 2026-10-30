@@ -2,6 +2,7 @@ package com.cztr.routinealarm.ui.plan
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Rect
 import android.graphics.Typeface
 import android.view.Gravity
 import android.widget.HorizontalScrollView
@@ -57,7 +58,22 @@ class PlanScreenView(
         })
 
         addView(text("Woche", 21f, true))
-        addView(HorizontalScrollView(context).apply {
+        addView(object : HorizontalScrollView(context) {
+            private var alignedViewportWidth = 0
+
+            override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+                super.onLayout(changed, left, top, right, bottom)
+                // A rebuilt Plan must reveal its selected day, including at large font sizes.
+                // Preserve manual scrolling when only the content is laid out again.
+                if (width <= 0 || width == alignedViewportWidth) return
+                val row = getChildAt(0) as? LinearLayout ?: return
+                val selected = (0 until row.childCount).map(row::getChildAt)
+                    .firstOrNull { it.isSelected } ?: return
+                requestChildRectangleOnScreen(row,
+                    Rect(selected.left, selected.top, selected.right, selected.bottom), true)
+                alignedViewportWidth = width
+            }
+        }.apply {
             isHorizontalScrollBarEnabled = false
             addView(LinearLayout(context).apply {
                 orientation = HORIZONTAL
