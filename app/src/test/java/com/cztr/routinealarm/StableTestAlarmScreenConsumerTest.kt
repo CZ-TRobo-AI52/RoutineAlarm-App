@@ -187,6 +187,56 @@ class StableTestAlarmScreenConsumerTest {
         inspect { repo -> assertEquals(original, StableTestAlarmActions(repo, Clock.systemUTC()).recover(original.id)) }
     }
 
+    @Test fun queuedHistoryNavigationCannotBeFinishedByAnEarlierActionReply() {
+        val fired = fixture()
+        val screen = open(fired)
+        val history = views(screen.get().window.decorView).filterIsInstance<Button>()
+            .single { it.text == "Testverlauf öffnen" }
+        val gate = UiReadDatabaseGate.holdNext()
+        click(screen, "Erledigt")
+        gate.awaitEntered()
+        history.performClick() // Already queued user navigation from the earlier view.
+        gate.release.countDown()
+        drain(screen)
+        assertFalse("Earlier command reply closed the history the user just opened", screen.get().isFinishing)
+        assertNull(screen.get().intent.data)
+        assertTrue(labels(screen).contains("Testverlauf"))
+        inspect { repo -> assertEquals(OccurrenceStatus.DONE, repo.get(fired.id)!!.status) }
+    }
+
+    @Test fun oldViewActionCannotCompleteTheReplacementDelivery() {
+        val first = fixture()
+        val second = fixture()
+        val screen = open(first)
+        val oldDone = views(screen.get().window.decorView).filterIsInstance<Button>().single { it.text == "Erledigt" }
+        screen.newIntent(intent(second))
+        drain(screen)
+        oldDone.performClick()
+        drain(screen)
+        inspect { repo ->
+            assertEquals(OccurrenceStatus.TRIGGERED, repo.get(first.id)!!.status)
+            assertEquals("Old view completed the newer delivery", OccurrenceStatus.TRIGGERED, repo.get(second.id)!!.status)
+            assertFalse(repo.history(second.id).any { it.actionType == "DONE" })
+        }
+    }
+
+    @Test fun acknowledgementCannotFinishTheStoppedScreenWhileTheCommandStillCommits() {
+        val fired = fixture()
+        val screen = open(fired).start().resume()
+        drain(screen)
+        val gate = UiReadDatabaseGate.holdNext()
+        click(screen, "Erledigt")
+        gate.awaitEntered()
+        screen.pause().stop()
+        val stoppedUi = labels(screen)
+        gate.release.countDown()
+        executor(screen).submit {}.get(10, TimeUnit.SECONDS)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(stoppedUi, labels(screen))
+        assertFalse("Late acknowledgement finished a stopped screen", screen.get().isFinishing)
+        inspect { repo -> assertEquals(OccurrenceStatus.DONE, repo.get(fired.id)!!.status) }
+    }
+
     @Test fun restoredStoreRejectsOldSavedRequestAndKeepsQuarantine() {
         val fired = fixture()
         val screen = open(fired)

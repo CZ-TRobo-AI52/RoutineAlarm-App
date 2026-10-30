@@ -149,8 +149,14 @@ class SqliteOccurrenceRepository(
     ).use { it.moveToFirst(); it.getInt(0) }
 
     /** Test-only activation. Imported personal authority needs its separate admission path. */
-    fun activateRestored(id: String): Boolean = transaction { db ->
-        if (get(db, id)?.isTest != true) return@transaction false
+    fun activateRestored(id: String, expected: AlarmDelivery? = null): Boolean = transaction { db ->
+        val current = get(db, id)?.takeIf { it.isTest } ?: return@transaction false
+        if (expected != null) {
+            val epoch = db.rawQuery(
+                "SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null,
+            ).use { check(it.moveToFirst()); it.getString(0) }
+            if (!expected.valid || expected != AlarmDelivery.from(current, epoch)) return@transaction false
+        }
         db.delete("restored_occurrences", "occurrence_id = ?", arrayOf(id)) == 1
     }
 

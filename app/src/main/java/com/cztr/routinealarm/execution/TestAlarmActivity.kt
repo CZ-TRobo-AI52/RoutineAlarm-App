@@ -31,6 +31,10 @@ class TestAlarmActivity : Activity() {
     private var pendingAction: ExecutionAction? = null
     private var invalidPendingAction = false
     private var actionInFlight = false
+    private var historyCommandInFlight = false
+    private var screenRevision = 0L
+    private var viewRevision = 0L
+    private var stopped = false
 
     private data class CommittedAction(val result: ActionResult, val followUpUnconfirmed: Boolean)
 
@@ -70,11 +74,15 @@ class TestAlarmActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        stopped = false
         TestAlarmRuntime.requestRecovery(this)
         render()
     }
 
     override fun onStop() {
+        stopped = true
+        screenRevision++
+        historyCommandInFlight = false
         reader.invalidate()
         super.onStop()
     }
@@ -85,6 +93,8 @@ class TestAlarmActivity : Activity() {
     }
 
     private fun readIntent(value: Intent) {
+        screenRevision++
+        historyCommandInFlight = false
         token = TestAlarmRuntime.token(value)
         tokenWasSupplied = value.data != null
         currentPage = null
@@ -104,6 +114,11 @@ class TestAlarmActivity : Activity() {
     }
 
     private fun openHistory() {
+        // Explicit screen navigation does not cancel an accepted command, but its late
+        // acknowledgement must not finish or repopulate the newly opened history.
+        pendingAction = null
+        invalidPendingAction = false
+        actionInFlight = false
         historyOffset = 0
         setIntent(Intent(this, javaClass))
         readIntent(intent)
@@ -112,6 +127,11 @@ class TestAlarmActivity : Activity() {
     private fun render() {
         val currentToken = token
         val requestedOffset = historyOffset
+        if (historyCommandInFlight) {
+            reader.invalidate()
+            show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))
+            return
+        }
         val pending = pendingAction
         if (invalidPendingAction || pending != null && !matchesDelivery(pending, currentToken)) {
             reader.invalidate()
@@ -205,7 +225,13 @@ class TestAlarmActivity : Activity() {
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = if (colors == com.cztr.routinealarm.ui.design.R52Colors.Light)
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else 0
-        setContentView(TestAlarmScreenView(this, state, colors, ::handleUiAction))
+        val renderedView = ++viewRevision
+        setContentView(TestAlarmScreenView(this, state, colors) { action ->
+            // Navigation has no execution authority. A detached view may not apply its
+            // action to a different delivery or to a newer history snapshot.
+            if (!stopped && !isFinishing && !isDestroyed && (renderedView == viewRevision ||
+                action == TestAlarmUiAction.CLOSE || action == TestAlarmUiAction.OPEN_HISTORY)) handleUiAction(action)
+        })
     }
 
     private fun handleUiAction(action: TestAlarmUiAction) {
@@ -229,10 +255,12 @@ class TestAlarmActivity : Activity() {
     }
 
     private fun handleHistoryRow(action: TestAlarmUiAction.HistoryRow) {
+        if (stopped || historyCommandInFlight || pendingAction != null || isFinishing || isDestroyed) return
         val page = currentPage ?: return
         val item = page.items.firstOrNull { it.occurrence.id == action.id }?.occurrence ?: return
+        val expected = AlarmDelivery.from(item, page.deliveryEpoch)
         when (action.action) {
-            TestHistoryRowAction.ACTIVATE -> confirmActivation(item.id)
+            TestHistoryRowAction.ACTIVATE -> confirmActivation(expected)
             TestHistoryRowAction.OPEN -> {
                 runCatching { TestAlarmRuntime.refresh(this) }.onFailure { showError(it) }
                 startActivity(TestAlarmRuntime.putToken(
@@ -240,38 +268,79 @@ class TestAlarmActivity : Activity() {
                     AlarmDelivery.from(item, page.deliveryEpoch),
                 ))
             }
-            TestHistoryRowAction.REPLAN -> runCatching { TestAlarmRuntime.schedule(this, item) }
-                .onSuccess { toast("Testwecker erneut geplant. Vergangene Weckzeiten lösen sofort aus.") }
-                .onFailure { showError(it) }
+            TestHistoryRowAction.REPLAN -> {
+                val app = applicationContext
+                runHistoryCommand(work = {
+                    TestAlarmRuntime.repository(app).use { repo ->
+                        check(repo.deliveryEpoch() == expected.epoch &&
+                            repo.get(item.id) == item && repo.isDeliveryAllowed(item.id)) {
+                            "History delivery is no longer current"
+                        }
+                    }
+                    TestAlarmRuntime.schedule(app, item)
+                }, saved = {
+                    toast("Testwecker erneut geplant. Vergangene Weckzeiten lösen sofort aus.")
+                }, failed = {
+                    toast("Planung nicht bestätigt. Aktuellen Testverlauf prüfen; gespeicherte Daten bleiben erhalten.")
+                })
+            }
         }
     }
 
-    private fun confirmActivation(id: String) {
+    private fun confirmActivation(expected: AlarmDelivery) {
         android.app.AlertDialog.Builder(this).setTitle("Testwecker aktivieren")
             .setMessage("Dieser übernommene Test wird wieder aktiv. Vergangene Weckzeiten und bereits ausgelöste Tests können sofort klingeln. Die übrigen übernommenen Tests bleiben pausiert.")
             .setNegativeButton("Abbrechen", null)
             .setPositiveButton("Aktivieren") { _, _ ->
-                try {
-                    val restored = TestAlarmRuntime.repository(this).use { repo ->
-                        check(repo.activateRestored(id)) { "Dieser Test wurde bereits aktiviert." }
-                        val item = requireNotNull(repo.get(id))
+                val app = applicationContext
+                runHistoryCommand(work = {
+                    val restored = TestAlarmRuntime.repository(app).use { repo ->
+                        check(repo.activateRestored(expected.occurrenceId, expected)) {
+                            "Captured restore confirmation is no longer current"
+                        }
+                        val item = requireNotNull(repo.get(expected.occurrenceId))
                         item to AlarmDelivery.from(item, repo.deliveryEpoch())
                     }
                     if (restored.first.status == OccurrenceStatus.TRIGGERED) {
-                        TestAlarmRuntime.refresh(this)
+                        TestAlarmRuntime.refresh(app)
+                    } else TestAlarmRuntime.schedule(app, restored.first)
+                    restored
+                }, saved = { restored ->
+                    if (restored.first.status == OccurrenceStatus.TRIGGERED) {
                         startActivity(TestAlarmRuntime.putToken(Intent(this, javaClass), restored.second))
-                    } else TestAlarmRuntime.schedule(this, restored.first)
+                    }
                     toast("Aktivierung gespeichert. Tatsächliche Alarmausgabe bitte prüfen.")
-                } catch (_: Exception) {
+                }, failed = {
                     toast("Aktivierung oder Planung nicht bestätigt. Aktuellen Verlauf prüfen; eine gespeicherte Aktivierung bleibt erhalten.")
-                }
-                render()
+                })
             }.show()
+    }
+
+    private fun <T> runHistoryCommand(work: () -> T, saved: (T) -> Unit, failed: (Throwable) -> Unit) {
+        if (stopped || historyCommandInFlight || pendingAction != null || isFinishing || isDestroyed) return
+        val request = screenRevision
+        historyCommandInFlight = true
+        reader.invalidate()
+        show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))
+        val admitted = reader.submit(work) { result ->
+            if (request != screenRevision || isFinishing || isDestroyed) return@submit
+            historyCommandInFlight = false
+            result.fold(onSuccess = saved, onFailure = {
+                android.util.Log.e("TestAlarm", "Verlaufsaktion nicht bestätigt", it)
+                failed(it)
+            })
+            if (request == screenRevision && !isFinishing && !isDestroyed) render()
+        }
+        if (!admitted) {
+            historyCommandInFlight = false
+            failed(IllegalStateException("Screen I/O already closed"))
+            render()
+        }
     }
 
     private fun act(expected: AlarmDelivery, type: ActionType, snoozeMinutes: Int? = null) {
         // A queued second tap cannot replace the request, its timestamp or its snooze duration.
-        if (isFinishing || isDestroyed || pendingAction != null || invalidPendingAction || token != expected) return
+        if (stopped || isFinishing || isDestroyed || pendingAction != null || invalidPendingAction || token != expected) return
         pendingAction = StableTestAlarmActions.freeze("test-user:${java.util.UUID.randomUUID()}",
             expected, type, Instant.now(), snoozeMinutes)
         submitPendingAction()
@@ -279,7 +348,7 @@ class TestAlarmActivity : Activity() {
 
     private fun submitPendingAction() {
         val action = pendingAction ?: return
-        if (isFinishing || isDestroyed || actionInFlight || !matchesDelivery(action, token)) return
+        if (stopped || isFinishing || isDestroyed || actionInFlight || !matchesDelivery(action, token)) return
         actionInFlight = true
         reader.invalidate()
         show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))
@@ -287,6 +356,8 @@ class TestAlarmActivity : Activity() {
         val admitted = reader.submit({ commitAction(app, action) }) { answer ->
             if (isFinishing || isDestroyed || pendingAction != action) return@submit
             actionInFlight = false
+            // The original request remains available for an explicit journal retry on resume.
+            if (stopped) return@submit
             answer.fold(onSuccess = { completed ->
                 pendingAction = null
                 when {
