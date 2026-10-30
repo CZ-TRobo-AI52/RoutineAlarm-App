@@ -3,7 +3,6 @@ package com.cztr.routinealarm.ui.system
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Typeface
-import android.text.TextUtils
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.cztr.routinealarm.ui.accessibility.R52Accessibility
@@ -36,8 +35,8 @@ class SystemScreenView(
         }
         fun button(label: String, action: SystemAction) = R52Button(context, label, colors).apply {
             minimumHeight = dp(R52Dimensions.TOUCH_TARGET)
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
+            maxLines = Int.MAX_VALUE
+            ellipsize = null
             setOnClickListener { onAction(action) }
         }
         fun statusLabel(status: SystemStatus) = when (status.readiness) {
