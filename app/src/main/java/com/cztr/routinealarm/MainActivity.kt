@@ -119,6 +119,17 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100 && !isFinishing && !isDestroyed) {
+            render()
+        }
+    }
+
     override fun onDestroy() {
         ScheduleState.unobserve(this, weeklyObserver)
         testStatusLoader.close()
@@ -1553,7 +1564,15 @@ class MainActivity : Activity() {
                         )
                 }
 
-            startActivity(intent)
+            try {
+                startActivity(intent)
+            } catch (_: android.content.ActivityNotFoundException) {
+                Toast.makeText(
+                    this,
+                    "Android-Einstellungen konnten nicht geöffnet werden. Bitte die Freigabe in den Systemeinstellungen prüfen.",
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
     }
 
