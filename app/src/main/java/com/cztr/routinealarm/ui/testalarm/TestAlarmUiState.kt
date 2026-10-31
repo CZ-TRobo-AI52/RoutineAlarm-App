@@ -1,5 +1,8 @@
 package com.cztr.routinealarm.ui.testalarm
 
+import com.cztr.routinealarm.ui.notification.MenuChoice
+import com.cztr.routinealarm.ui.notification.MenuStage
+
 enum class TestHistoryRowAction { ACTIVATE, OPEN, REPLAN }
 
 data class TestHistoryUiRow(
@@ -21,12 +24,14 @@ sealed interface TestAlarmUiAction {
     data object OLDER : TestAlarmUiAction
     data class Snooze(val minutes: Int) : TestAlarmUiAction
     data class HistoryRow(val id: String, val action: TestHistoryRowAction) : TestAlarmUiAction
+    data class NotificationChoice(val choice: MenuChoice) : TestAlarmUiAction
 }
 
 sealed interface TestAlarmUiState {
     data class Loading(val title: String) : TestAlarmUiState
     data class Invalid(val title: String, val detail: String) : TestAlarmUiState
     data class Error(val message: String, val title: String = "Verlauf nicht verfügbar") : TestAlarmUiState
+    data class NotificationActions(val title: String, val stage: MenuStage) : TestAlarmUiState
     data class Active(
         val title: String,
         val spokenText: String?,

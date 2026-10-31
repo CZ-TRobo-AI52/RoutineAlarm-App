@@ -3,7 +3,6 @@ package com.cztr.routinealarm.ui.testalarm
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Typeface
-import android.text.TextUtils
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -14,6 +13,8 @@ import com.cztr.routinealarm.ui.components.R52Card
 import com.cztr.routinealarm.ui.design.R52Colors
 import com.cztr.routinealarm.ui.design.R52Dimensions
 import com.cztr.routinealarm.ui.design.R52Typography
+import com.cztr.routinealarm.ui.notification.NotificationMenu
+import com.cztr.routinealarm.ui.notification.NotificationOperation
 
 @SuppressLint("ViewConstructor")
 class TestAlarmScreenView(
@@ -40,8 +41,8 @@ class TestAlarmScreenView(
         }
         fun button(label: String, action: TestAlarmUiAction) = R52Button(context, label, colors).apply {
             minimumHeight = dp(R52Dimensions.TOUCH_TARGET)
-            maxLines = 2
-            ellipsize = TextUtils.TruncateAt.END
+            maxLines = Int.MAX_VALUE
+            ellipsize = null
             setOnClickListener { onAction(action) }
         }
         val root = LinearLayout(context).apply {
@@ -86,6 +87,15 @@ class TestAlarmScreenView(
                         addView(snoozeRow)
                     }, fullWidth(8))
                     root.addView(button("Überspringen", TestAlarmUiAction.SKIP), fullWidth(8))
+                }
+                root.addView(button("Testverlauf öffnen", TestAlarmUiAction.OPEN_HISTORY), fullWidth(8))
+            }
+            is TestAlarmUiState.NotificationActions -> {
+                root.addView(text("TESTWECKER", R52Typography.LABEL, true))
+                root.addView(text(state.title, R52Typography.SCREEN_TITLE, true))
+                NotificationMenu.buttons(state.stage, setOf(NotificationOperation.DONE,
+                    NotificationOperation.SKIP, NotificationOperation.SNOOZE)).forEach { item ->
+                    root.addView(button(item.label, TestAlarmUiAction.NotificationChoice(item.choice)), fullWidth(8))
                 }
                 root.addView(button("Testverlauf öffnen", TestAlarmUiAction.OPEN_HISTORY), fullWidth(8))
             }
