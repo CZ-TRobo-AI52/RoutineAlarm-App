@@ -96,6 +96,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
                 .setContentText("Erledigen, überspringen oder verschieben")
                 .setContentIntent(pending).setCategory(Notification.CATEGORY_ALARM)
                 .setOngoing(true).setOnlyAlertOnce(!changed)
+                .apply { TestAlarmNotification.actions(this@TestAlarmService, token).forEach { addAction(it) } }
                 .apply { if (changed) setFullScreenIntent(pending, true) }.build()
             foreground(notification)
             if (ready && speakNow) {
