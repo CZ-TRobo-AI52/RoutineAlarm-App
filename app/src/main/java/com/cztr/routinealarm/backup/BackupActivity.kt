@@ -19,11 +19,15 @@ import java.util.concurrent.Executors
 class BackupActivity : Activity() {
     private val worker = Executors.newSingleThreadExecutor()
     private var busy = false
+    private var pendingDocumentRequest: Int? = null
+    private var restoreConfirmation: AlertDialog? = null
     private var operation = BackupOperation.IDLE
     private var statusMessage: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        pendingDocumentRequest = savedInstanceState?.getInt(PENDING_DOCUMENT)
+            ?.takeIf { it == EXPORT || it == IMPORT }
         render()
     }
 
@@ -31,9 +35,13 @@ class BackupActivity : Activity() {
         val colors = AppNavigationState(theme = ThemePreferenceStore(this).read())
             .colors(resources.configuration)
         val state = BackupUiMapper.map(BackupUiInput(
-            busy = busy,
+            busy = busy || pendingDocumentRequest != null || restoreConfirmation != null,
             operation = operation,
-            statusMessage = statusMessage,
+            statusMessage = when {
+                pendingDocumentRequest != null -> "Dateiauswahl geöffnet. Auswahl abschließen oder abbrechen."
+                restoreConfirmation != null -> "Wiederherstellung bestätigen oder abbrechen."
+                else -> statusMessage
+            },
         ))
         window.statusBarColor = colors.background
         window.navigationBarColor = colors.background
@@ -41,22 +49,50 @@ class BackupActivity : Activity() {
     }
 
     private fun handleBackupAction(action: BackupUiAction) {
-        if (busy && action in setOf(BackupUiAction.SAVE, BackupUiAction.LOAD)) return
+        if (isFinishing || isDestroyed) return
+        if ((busy || pendingDocumentRequest != null || restoreConfirmation != null) &&
+            action in setOf(BackupUiAction.SAVE, BackupUiAction.LOAD)) return
         when (action) {
             BackupUiAction.SAVE -> chooseDocument(EXPORT)
-            BackupUiAction.LOAD -> AlertDialog.Builder(this)
-                .setTitle("Ereignisverlauf wiederherstellen")
-                .setMessage("Nur eine eigene Sicherung laden. Vorhandener Verlauf wird nicht überschrieben. Übernommene Alarme bleiben zunächst pausiert.")
-                .setNegativeButton("Abbrechen", null)
-                .setPositiveButton("Datei auswählen") { _, _ -> chooseDocument(IMPORT) }
-                .show()
+            BackupUiAction.LOAD -> confirmRestore()
             BackupUiAction.OPEN_HISTORY -> startActivity(Intent(this, TestAlarmActivity::class.java))
             BackupUiAction.CLOSE -> finish()
         }
     }
 
+    private fun confirmRestore() {
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Ereignisverlauf wiederherstellen")
+            .setMessage("Nur eine eigene Sicherung laden. Vorhandener Verlauf wird nicht überschrieben. Übernommene Alarme bleiben zunächst pausiert.")
+            .setNegativeButton("Abbrechen", null)
+            .setPositiveButton("Datei auswählen") { current, _ ->
+                if (restoreConfirmation === current && !isFinishing && !isDestroyed) {
+                    restoreConfirmation = null
+                    chooseDocument(IMPORT)
+                }
+            }
+            .create()
+        restoreConfirmation = dialog
+        dialog.setOnDismissListener {
+            if (restoreConfirmation === dialog) {
+                restoreConfirmation = null
+                if (!isFinishing && !isDestroyed) render()
+            }
+        }
+        render()
+        dialog.show()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingDocumentRequest?.let { outState.putInt(PENDING_DOCUMENT, it) }
+        super.onSaveInstanceState(outState)
+    }
+
     @Suppress("DEPRECATION")
     private fun chooseDocument(request: Int) {
+        if (busy || pendingDocumentRequest != null || isFinishing || isDestroyed) return
+        pendingDocumentRequest = request
+        render()
         val intent = Intent(if (request == EXPORT) Intent.ACTION_CREATE_DOCUMENT else Intent.ACTION_OPEN_DOCUMENT)
             .addCategory(Intent.CATEGORY_OPENABLE)
             .setType("application/octet-stream")
@@ -66,6 +102,7 @@ class BackupActivity : Activity() {
         try {
             startActivityForResult(intent, request)
         } catch (_: RuntimeException) {
+            pendingDocumentRequest = null
             statusMessage = "Kein Dokumentanbieter verfügbar. Es wurden keine Daten geändert."
             render()
         }
@@ -74,8 +111,13 @@ class BackupActivity : Activity() {
     @Deprecated("Platform document result API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode !in setOf(EXPORT, IMPORT) || resultCode != RESULT_OK) return
-        val uri = data?.data ?: return
+        if (requestCode != pendingDocumentRequest || isFinishing || isDestroyed) return
+        pendingDocumentRequest = null
+        val uri = data?.data
+        if (resultCode != RESULT_OK || uri == null) {
+            render()
+            return
+        }
         if (uri.scheme != "content") {
             statusMessage = "Bitte eine Datei über den Android-Dokumentdialog auswählen."
             render()
@@ -122,11 +164,15 @@ class BackupActivity : Activity() {
     }
 
     override fun onDestroy() {
+        restoreConfirmation?.setOnDismissListener(null)
+        restoreConfirmation?.dismiss()
+        restoreConfirmation = null
         worker.shutdown()
         super.onDestroy()
     }
 
     companion object {
+        private const val PENDING_DOCUMENT = "backup.pendingDocumentRequest"
         private const val EXPORT = 401
         private const val IMPORT = 402
     }

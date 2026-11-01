@@ -70,7 +70,11 @@ class PlanDaySelectionVisibilityTest {
     }
 
     @Test fun realActivityRerenderKeepsSelectedDayVisibleWithoutScheduling() {
-        val controller = Robolectric.buildActivity(MainActivity::class.java).create()
+        // Force a different starting day: selecting an already selected day is a no-op.
+        val initialState = android.os.Bundle().apply {
+            putInt("r52_selected_day", DayOfWeek.MONDAY.value)
+        }
+        val controller = Robolectric.buildActivity(MainActivity::class.java).create(initialState)
         val activity = controller.get()
         try {
             awaitUi(activity)
@@ -81,6 +85,7 @@ class PlanDaySelectionVisibilityTest {
             layout(before, 280)
             val sunday = views(strip(before)).filterIsInstance<Button>()
                 .single { it.contentDescription.toString().startsWith("Sonntag auswählen") }
+            assertFalse("The interaction must change the selected day", sunday.isSelected)
             strip(before).scrollTo(sunday.left, 0)
             val alarms = shadowOf(activity.getSystemService(AlarmManager::class.java))
             val scheduledBefore = alarms.scheduledAlarms.toList()
