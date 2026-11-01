@@ -527,7 +527,7 @@ class SqliteOccurrenceRepository(
         }
     }
 
-    private fun <T> transaction(block: (SQLiteDatabase) -> T): T {
+    private fun <T> transaction(block: (SQLiteDatabase) -> T): T = TestOutputAdmission.writing {
         val db = helper.writableDatabase
         db.beginTransaction()
         try {
@@ -535,7 +535,7 @@ class SqliteOccurrenceRepository(
             beforeCommit()
             db.setTransactionSuccessful()
             // endTransaction performs the commit and may throw. Never return success before it.
-            return result
+            result
         } finally {
             db.endTransaction()
         }

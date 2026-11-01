@@ -9,6 +9,7 @@ import android.speech.tts.TextToSpeech
 import android.util.Log
 import com.cztr.routinealarm.occurrence.*
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /** A small queue of persisted test occurrences; UI never sends a global STOP. */
 class TestAlarmService : Service(), TextToSpeech.OnInitListener {
@@ -18,6 +19,9 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
         const val NOTIFICATION = 1003
     }
     private val handler = Handler(Looper.getMainLooper())
+    private val reader = Executors.newSingleThreadExecutor { task -> Thread(task, "test-output-reader") }
+    private var refreshGeneration = 0L
+    private var started = false
     private var tts: TextToSpeech? = null
     private var destroyed = false
     private var ready = false
@@ -43,7 +47,8 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
-            foreground(Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            // An unvalidated arrival must not erase actions of an admitted output.
+            if (current == null) foreground(Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
                 .setContentTitle("Testwecker wird geprüft").setOnlyAlertOnce(true).build())
         } catch (error: RuntimeException) {
             // Exact-alarm/foreground eligibility may have been revoked since delivery.
@@ -52,32 +57,57 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
             shutdown()
             return START_NOT_STICKY
         }
-        if (intent?.action != REFRESH) {
-            val token = TestAlarmRuntime.token(intent)
-            val valid = token != null && runCatching {
-                TestAlarmRuntime.repository(this).use { TestAlarmRuntime.coordinator(it).active(token) != null }
-            }.getOrDefault(false)
-            if (!valid) {
-                // A stale arrival may not replace an already playing valid item.
-                refreshOutput(speakNow = false)
-                return START_NOT_STICKY
-            }
-        }
-        refreshOutput(speakNow = true)
+        started = true
+        refreshOutput(speakNow = true, arrival = if (intent?.action == REFRESH) null else intent,
+            validateArrival = intent?.action != REFRESH)
         return START_NOT_STICKY
     }
 
-    private fun refreshOutput(speakNow: Boolean) {
-        if (destroyed) return
+    private fun refreshOutput(speakNow: Boolean, arrival: Intent? = null, validateArrival: Boolean = false) {
+        if (destroyed || !started) return
         handler.removeCallbacks(repeat)
-        try {
-            val selected = TestAlarmRuntime.repository(this).use { repo ->
-                val active = current?.let { TestAlarmRuntime.coordinator(repo).active(it) }
-                val item = active ?: repo.openTests().firstOrNull {
-                    it.status == OccurrenceStatus.TRIGGERED && repo.isDeliveryAllowed(it.id)
-                }
-                item?.let { it to AlarmDelivery.from(it, repo.deliveryEpoch()) }
+        val request = ++refreshGeneration
+        val previous = current
+        reader.execute {
+            val ticket = TestOutputAdmission.ticket()
+            if (ticket == null) {
+                handler.postDelayed({ if (!destroyed && request == refreshGeneration)
+                    refreshOutput(speakNow, arrival, validateArrival) }, 50)
+                return@execute
             }
+            try {
+                var permittedSpeech = speakNow
+                val selected = TestAlarmRuntime.repository(this).use { repo ->
+                    if (validateArrival) {
+                        val token = TestAlarmRuntime.token(arrival)
+                        permittedSpeech = speakNow && token != null &&
+                            TestAlarmRuntime.coordinator(repo).active(token) != null
+                    }
+                    val active = previous?.let { TestAlarmRuntime.coordinator(repo).active(it) }
+                    val item = active ?: repo.openTests().firstOrNull {
+                        it.status == OccurrenceStatus.TRIGGERED && repo.isDeliveryAllowed(it.id)
+                    }
+                    item?.let { it to AlarmDelivery.from(it, repo.deliveryEpoch()) }
+                }
+                handler.post {
+                    if (!destroyed && request == refreshGeneration) {
+                        val admitted = TestOutputAdmission.admit(ticket) { renderOutput(selected, permittedSpeech) }
+                        if (!admitted) refreshOutput(speakNow, arrival, validateArrival)
+                    }
+                }
+            } catch (error: Exception) {
+                handler.post {
+                    if (!destroyed && request == refreshGeneration) {
+                        Log.e("TestAlarm", "Testverlauf ist nicht lesbar; Ausgabe beendet", error)
+                        shutdown()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun renderOutput(selected: Pair<RoutineOccurrence, AlarmDelivery>?, speakNow: Boolean) {
+        try {
             if (selected == null) { shutdown(); return }
             val (item, token) = selected
             val changed = token != current
@@ -100,7 +130,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
                 .apply { if (changed) setFullScreenIntent(pending, true) }.build()
             foreground(notification)
             if (ready && speakNow) {
-                // Main-thread Activity actions and speech are serialized in this process.
+                // The admission fence rejects a snapshot crossing any repository mutation.
                 tts?.speak(item.spokenText, TextToSpeech.QUEUE_FLUSH, null,
                     "test:${item.id}:${item.generation}")
             }
@@ -128,7 +158,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
             tts?.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ALARM)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
         }
-        if (current != null) refreshOutput(speakNow = true)
+        if (started) refreshOutput(speakNow = true)
     }
 
     private fun foreground(notification: Notification) {
@@ -138,6 +168,8 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun shutdown() {
+        started = false
+        refreshGeneration++
         handler.removeCallbacks(repeat)
         tts?.stop()
         current = null
@@ -147,6 +179,9 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         destroyed = true
+        started = false
+        refreshGeneration++
+        reader.shutdownNow()
         ready = false
         current = null
         handler.removeCallbacksAndMessages(null)
