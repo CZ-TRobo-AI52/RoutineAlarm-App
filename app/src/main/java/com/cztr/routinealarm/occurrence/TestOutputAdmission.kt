@@ -5,6 +5,10 @@ package com.cztr.routinealarm.occurrence
  * Platform calls admitted before a write may finish; snapshots queued across it may not play.
  */
 internal object TestOutputAdmission {
+    private val session = java.util.concurrent.atomic.AtomicReference<String?>()
+    fun registerSession(id: String) { session.set(id) }
+    fun currentSession(id: String): Boolean = session.get() == id
+    fun releaseSession(id: String) { session.compareAndSet(id, null) }
     private val monitor = Any()
     private var revision = 0L
     private var writers = 0

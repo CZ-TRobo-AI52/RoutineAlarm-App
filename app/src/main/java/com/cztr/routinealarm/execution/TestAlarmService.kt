@@ -18,6 +18,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
         const val CHANNEL = "test_execution_alarm"
         const val NOTIFICATION = 1003
     }
+    private val outputSession = java.util.UUID.randomUUID().toString()
     private val handler = Handler(Looper.getMainLooper())
     private val reader = Executors.newSingleThreadExecutor { task -> Thread(task, "test-output-reader") }
     private var refreshGeneration = 0L
@@ -37,6 +38,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
 
     override fun onCreate() {
         super.onCreate()
+        TestOutputAdmission.registerSession(outputSession)
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL, "Testwecker mit Verlauf", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Testwecker und ihre gespeicherten Aktionen"
@@ -69,7 +71,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
         val request = ++refreshGeneration
         val previous = current
         reader.execute {
-            val ticket = TestOutputAdmission.ticket()
+            var ticket = TestOutputAdmission.ticket()
             if (ticket == null) {
                 handler.postDelayed({ if (!destroyed && request == refreshGeneration)
                     refreshOutput(speakNow, arrival, validateArrival) }, 50)
@@ -84,14 +86,25 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
                             TestAlarmRuntime.coordinator(repo).active(token) != null
                     }
                     val active = previous?.let { TestAlarmRuntime.coordinator(repo).active(it) }
-                    val item = active ?: repo.openTests().firstOrNull {
-                        it.status == OccurrenceStatus.TRIGGERED && repo.isDeliveryAllowed(it.id)
+                    val item = active?.takeUnless { it.outputSilencedGeneration == it.generation } ?: repo.openTests().firstOrNull {
+                        it.status == OccurrenceStatus.TRIGGERED && it.outputSilencedGeneration != it.generation && repo.isDeliveryAllowed(it.id)
                     }
-                    item?.let { it to AlarmDelivery.from(it, repo.deliveryEpoch()) }
+                    item?.let {
+                        val delivery = AlarmDelivery.from(it, repo.deliveryEpoch())
+                        if (!repo.bindTestOutput(delivery, outputSession) {
+                                TestOutputAdmission.currentSession(outputSession) }) null
+                        else {
+                            ticket = TestOutputAdmission.ticket()
+                            val fresh = TestAlarmRuntime.coordinator(repo).active(delivery)
+                            fresh?.takeIf { row -> row.outputSilencedGeneration != row.generation &&
+                                repo.outputInstance(row.id) == outputSession }?.let { row -> row to delivery }
+                        }
+                    }
                 }
+                val readTicket = ticket
                 handler.post {
-                    if (!destroyed && request == refreshGeneration) {
-                        val admitted = TestOutputAdmission.admit(ticket) { renderOutput(selected, permittedSpeech) }
+                    if (!destroyed && request == refreshGeneration && TestOutputAdmission.currentSession(outputSession)) {
+                        val admitted = readTicket != null && TestOutputAdmission.admit(readTicket) { renderOutput(selected, permittedSpeech) }
                         if (!admitted) refreshOutput(speakNow, arrival, validateArrival)
                     }
                 }
@@ -179,6 +192,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
 
     override fun onDestroy() {
         destroyed = true
+        TestOutputAdmission.releaseSession(outputSession)
         started = false
         refreshGeneration++
         reader.shutdownNow()

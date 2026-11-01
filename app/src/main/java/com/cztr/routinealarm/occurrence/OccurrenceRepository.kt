@@ -327,10 +327,36 @@ class SqliteOccurrenceRepository(
         if (cursor.moveToFirst() && !cursor.isNull(0)) OccurrenceCodec.decodeAction(cursor.getString(0)) else null
     }
 
+    /** Operational output identity lives in the existing snapshot, outside domain revisions.
+     * It grants no request authority. A restart replaces it only under current delivery admission.
+     */
+    internal fun bindTestOutput(token: AlarmDelivery, instance: String,
+        stillCurrent: () -> Boolean = { true }): Boolean = transaction { db ->
+        require(java.util.UUID.fromString(instance).toString() == instance)
+        val row = get(db, token.occurrenceId) ?: return@transaction false
+        val epoch = db.rawQuery("SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null)
+            .use { check(it.moveToFirst()); it.getString(0) }
+        if (!stillCurrent() || !token.valid || !row.isTest || row.status != OccurrenceStatus.TRIGGERED ||
+            token != AlarmDelivery.from(row, epoch) || !deliveryAllowed(db, row.id) ||
+            row.outputSilencedGeneration == row.generation) return@transaction false
+        val snapshot = db.query("occurrences", arrayOf("snapshot"), "occurrence_id = ?", arrayOf(row.id),
+            null, null, null).use { check(it.moveToFirst()); org.json.JSONObject(it.getString(0)) }
+        snapshot.put("outputInstance", instance)
+        db.update("occurrences", ContentValues().apply { put("snapshot", snapshot.toString()) },
+            "occurrence_id = ?", arrayOf(row.id)) == 1
+    }
+
+    private fun outputInstance(db: SQLiteDatabase, id: String): String? = db.query("occurrences",
+        arrayOf("snapshot"), "occurrence_id = ?", arrayOf(id), null, null, null).use {
+        if (!it.moveToFirst()) null else org.json.JSONObject(it.getString(0)).optString("outputInstance").takeIf(String::isNotBlank)
+    }
+
+    internal fun outputInstance(id: String): String? = outputInstance(helper.readableDatabase, id)
+
     /** Atomic current admission plus the existing action/journal transaction; test scope only. */
     internal fun applyTestUserAction(action: ExecutionAction): ActionResult {
         val originalEpoch = StableTestAlarmActions.epoch(action)
-        return applyAction(action) { db ->
+        return applyAction(action, allowClose = true) { db ->
             val currentEpoch = db.rawQuery(
                 "SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null,
             ).use { check(it.moveToFirst()); it.getString(0) }
@@ -342,7 +368,7 @@ class SqliteOccurrenceRepository(
 
     override fun apply(action: ExecutionAction): ActionResult = applyAction(action)
 
-    private fun applyAction(action: ExecutionAction, admission: (SQLiteDatabase) -> Unit = {}): ActionResult = transaction { db ->
+    private fun applyAction(action: ExecutionAction, allowClose: Boolean = false, admission: (SQLiteDatabase) -> Unit = {}): ActionResult = transaction { db ->
         admission(db)
         // Structural errors cannot enter the journal: otherwise an external action
         // could reserve the internal SCHEDULE key of a future occurrence.
@@ -372,6 +398,10 @@ class SqliteOccurrenceRepository(
         // Recheck persisted quarantine and retirement in the same transaction as the write.
         // Historical replay above remains readable without granting a new execution effect.
         check(deliveryAllowed(db, current.id)) { "This occurrence is paused after restore or retired by a newer plan" }
+        require(action.type != ActionType.CLOSE_OUTPUT || allowClose) { "Output close requires epoch-bound test admission" }
+        // Duplicate full requests above remain historical. New requests need the live instance.
+        check(action.type != ActionType.CLOSE_OUTPUT ||
+            outputInstance(db, current.id) == action.outputInstanceId) { "Stale output instance" }
         val transition = OccurrenceTransitions.apply(current, action)
         val result = ActionResult(transition.outcome, transition.occurrence, transition.reason)
         if (result.outcome == Outcome.APPLIED) {
@@ -567,7 +597,7 @@ class SqliteOccurrenceRepository(
         }
         require(occurrence.status == OccurrenceStatus.SCHEDULED && occurrence.revision == 0L &&
             occurrence.generation == 0L && occurrence.snoozeCount == 0 && occurrence.totalSnoozeMinutes == 0 &&
-            occurrence.currentTriggerAt == occurrence.plannedAt) { "Materialization requires an initial scheduled occurrence" }
+            occurrence.currentTriggerAt == occurrence.plannedAt && occurrence.outputSilencedGeneration == null) { "Materialization requires an initial scheduled occurrence" }
     }
 
     private fun sameIdentity(left: RoutineOccurrence, right: RoutineOccurrence): Boolean =
@@ -629,7 +659,7 @@ class SqliteOccurrenceRepository(
 
 /** Schema 5 adds personal authority and monotonic retirement without changing execution evidence. */
 private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHelper(
-    context, name, null, 5,
+    context, name, null, 6,
     DatabaseErrorHandler { throw SQLiteException("Occurrence database is corrupt; original file retained") },
 ) {
     override fun onConfigure(db: SQLiteDatabase) {
@@ -646,16 +676,24 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(oldVersion in 1..4 && newVersion == 5) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
+        check(oldVersion in 1..5 && newVersion == 6) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
         // SQLiteOpenHelper wraps onUpgrade and its version change in one transaction.
-        validate(db, when (oldVersion) { 1 -> V1_SCHEMA; 2 -> V2_SCHEMA; 3 -> V3_SCHEMA; else -> V4_SCHEMA })
+        validate(db, when (oldVersion) { 1 -> V1_SCHEMA; 2 -> V2_SCHEMA; 3 -> V3_SCHEMA; 4 -> V4_SCHEMA; else -> V5_SCHEMA })
         if (oldVersion == 1) SCHEDULING_SCHEMA.values.forEach(db::execSQL)
         if (oldVersion < 3) {
             RESTORE_SCHEMA.values.forEach(db::execSQL)
             initializeMetadata(db)
         }
         if (oldVersion < 4) RECONCILIATION_SCHEMA.values.forEach(db::execSQL)
-        PersonalPlanPersistence.schema.values.forEach(db::execSQL)
+        if (oldVersion < 5) PersonalPlanPersistence.schema.values.forEach(db::execSQL)
+        // Transactional replacement retains all immutable execution rows and sequence values.
+        listOf("journal_no_update", "journal_no_delete").forEach { db.execSQL("DROP TRIGGER $it") }
+        db.execSQL("DROP INDEX journal_occurrence")
+        db.execSQL("ALTER TABLE execution_journal RENAME TO journal_v5_original")
+        db.execSQL(SCHEMA.getValue("execution_journal"))
+        db.execSQL("INSERT INTO execution_journal SELECT * FROM journal_v5_original")
+        db.execSQL("DROP TABLE journal_v5_original")
+        listOf("journal_occurrence", "journal_no_update", "journal_no_delete").forEach { db.execSQL(SCHEMA.getValue(it)) }
         validate(db, SCHEMA)
     }
 
@@ -772,7 +810,9 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
             "scheduling_identity" to "CREATE INDEX scheduling_identity ON scheduling_attempts(occurrence_id, generation, revision, sequence)",
         )
         private val V4_SCHEMA = V3_SCHEMA + RECONCILIATION_SCHEMA
-        private val SCHEMA = V4_SCHEMA + PersonalPlanPersistence.schema
+        private val V5_SCHEMA = V4_SCHEMA + PersonalPlanPersistence.schema
+        private val SCHEMA = V5_SCHEMA + ("execution_journal" to V1_SCHEMA.getValue("execution_journal")
+            .replace("'SNOOZE','MISS'", "'SNOOZE','MISS','CLOSE_OUTPUT'"))
     }
 }
 

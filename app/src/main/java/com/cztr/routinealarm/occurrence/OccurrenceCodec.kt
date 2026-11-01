@@ -32,6 +32,7 @@ internal object OccurrenceCodec {
         put("category", value.category.name)
         put("mode", value.mode.name)
         put("isTest", value.isTest)
+        if (value.outputSilencedGeneration != null) put("outputSilencedGeneration", value.outputSilencedGeneration)
     }.toString()
 
     fun decode(json: String): RoutineOccurrence = JSONObject(json).let {
@@ -51,7 +52,12 @@ internal object OccurrenceCodec {
             traceId = it.getString("traceId"), title = it.getString("title"),
             spokenText = it.getString("spokenText"), category = EventCategory.valueOf(it.getString("category")),
             mode = EventMode.valueOf(it.getString("mode")), isTest = it.getBoolean("isTest"),
-        )
+            outputSilencedGeneration = if (it.isNull("outputSilencedGeneration")) null else it.getLong("outputSilencedGeneration"),
+        ).also { row ->
+            require(row.outputSilencedGeneration == null || row.outputSilencedGeneration in 0..row.generation) {
+                "Output suppression must refer to an existing generation"
+            }
+        }
     }
 
     fun encode(action: ExecutionAction): String = JSONObject().apply {
@@ -66,6 +72,7 @@ internal object OccurrenceCodec {
         put("snoozeMinutes", action.snoozeMinutes ?: JSONObject.NULL)
         put("source", action.source)
         put("reason", action.reason ?: JSONObject.NULL)
+        if (action.outputInstanceId != null) put("outputInstanceId", action.outputInstanceId)
     }.toString()
 
     fun decodeAction(json: String): ExecutionAction = JSONObject(json).let {
@@ -77,6 +84,7 @@ internal object OccurrenceCodec {
             expectedRevision = it.getLong("expectedRevision"), expectedGeneration = it.getLong("expectedGeneration"),
             snoozeMinutes = if (it.isNull("snoozeMinutes")) null else it.getInt("snoozeMinutes"),
             source = it.getString("source"), reason = if (it.isNull("reason")) null else it.getString("reason"),
+            outputInstanceId = if (it.isNull("outputInstanceId")) null else it.getString("outputInstanceId"),
         )
     }
 }
