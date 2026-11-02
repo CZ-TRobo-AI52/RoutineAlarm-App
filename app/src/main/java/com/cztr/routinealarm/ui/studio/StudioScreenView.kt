@@ -20,6 +20,8 @@ class StudioScreenView(
     colors: R52Colors,
     onSelectFilter: (StudioFilter) -> Unit,
     onSelectRoutine: (String) -> Unit,
+    onCreateRoutine: (() -> Unit)? = null,
+    onEditRoutine: ((String) -> Unit)? = null,
 ) : LinearLayout(context) {
     init {
         orientation = VERTICAL
@@ -36,9 +38,10 @@ class StudioScreenView(
         }
 
         addView(card().apply {
-            addView(text("ROUTINESTUDIO · SICHERE VORSCHAU", 12f))
+            addView(text(if (onCreateRoutine == null && onEditRoutine == null) "ROUTINESTUDIO · SICHERE VORSCHAU" else "ROUTINESTUDIO", 12f))
             addView(text("Deine Routinen", 26f, true))
-            addView(text("Dieser Stand liest den bestehenden Wochenplan. Er verändert keine Routine und erzeugt keine neue Planung.", 14f))
+            addView(text(if (onCreateRoutine == null && onEditRoutine == null) "Dieser Stand liest den bestehenden Wochenplan. Er verändert keine Routine und erzeugt keine neue Planung." else "Routinen erstellen und bearbeiten. Speichern pausiert die Routine.", 14f))
+            onCreateRoutine?.let { create -> addView(R52Button(context, "Neue Routine", colors).apply { tag = "studio_create"; setOnClickListener { create() } }) }
         })
 
         addView(object : HorizontalScrollView(context) {
@@ -89,13 +92,14 @@ class StudioScreenView(
 
         state.selected?.let { detail ->
             addView(card().apply {
-                addView(text(detail.authorityLabel, 12f, true))
+                addView(text(if (onEditRoutine == null) detail.authorityLabel else "Routine bearbeiten", 12f, true))
                 addView(text(detail.title, 24f, true))
                 addView(text("${detail.timeLabel} · ${detail.daysLabel}"))
                 addView(text("${detail.categoryLabel} · ${detail.modeLabel} · ${detail.statusLabel}", 14f))
                 addView(text("Gesprochener Text", 14f, true))
                 addView(text(detail.spokenText, 14f))
-                addView(text(detail.detail, 14f))
+                if (onEditRoutine == null) addView(text(detail.detail, 14f))
+                else addView(R52Button(context, "Bearbeiten", colors).apply { tag = "studio_edit"; setOnClickListener { onEditRoutine(detail.id) } })
             })
         }
     }
