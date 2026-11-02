@@ -119,7 +119,7 @@ class PlanScreenView(
             textSize = 15f
             setTextColor(colors.text)
             setTypeface(typeface, Typeface.BOLD)
-        }, LayoutParams(dp(62), -2))
+        }, LayoutParams(-2, -2).apply { marginEnd = dp(8) })
         addView(LinearLayout(context).apply {
             orientation = VERTICAL
             addView(TextView(context).apply { text = item.title; textSize = 16f; setTextColor(colors.text) })
