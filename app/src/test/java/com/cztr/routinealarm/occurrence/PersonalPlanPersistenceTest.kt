@@ -264,6 +264,7 @@ class PersonalPlanPersistenceTest {
             it.execSQL("DROP TRIGGER personal_commits_no_update")
             it.execSQL("DROP TRIGGER personal_commits_no_delete")
             it.execSQL("DROP TABLE personal_plan_commits")
+            useHistoricalOutputJournalFixture(it, 4)
             it.version = 4
         }
         repo().use {

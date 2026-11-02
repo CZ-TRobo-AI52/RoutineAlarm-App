@@ -12,6 +12,8 @@ import com.cztr.routinealarm.execution.TestAlarmService
 import com.cztr.routinealarm.occurrence.AlarmDelivery
 import com.cztr.routinealarm.occurrence.OccurrenceStatus
 import com.cztr.routinealarm.occurrence.TestAlarmCoordinator
+import com.cztr.routinealarm.support.awaitTestOutput
+import com.cztr.routinealarm.support.awaitTestOutputStopped
 import com.cztr.routinealarm.support.awaitUi
 import com.cztr.routinealarm.support.awaitUiReadersStopped
 import org.junit.Assert.*
@@ -55,6 +57,7 @@ class ExistingCloseSemanticsTest {
         try {
             service.get().onStartCommand(TestAlarmRuntime.putToken(
                 Intent(context, TestAlarmService::class.java), delivery), 0, 1)
+            awaitTestOutput(service)
             val notifications = shadowOf(context.getSystemService(NotificationManager::class.java))
             fun notificationToken(): AlarmDelivery? = notifications.getNotification(TestAlarmService.NOTIFICATION)
                 ?.contentIntent?.let { TestAlarmRuntime.token(shadowOf(it).savedIntent) }
@@ -72,6 +75,7 @@ class ExistingCloseSemanticsTest {
             activity.pause().stop().destroy()
             awaitUiReadersStopped(activity.get())
             service.destroy()
+            awaitTestOutputStopped(service)
             repo.close()
             context.deleteDatabase("occurrences.db")
         }

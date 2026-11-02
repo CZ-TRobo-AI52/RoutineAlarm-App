@@ -4,6 +4,8 @@ import android.app.AlarmManager
 import android.app.AlertDialog
 import android.app.NotificationManager
 import android.content.Context
+import com.cztr.routinealarm.support.awaitTestOutput
+import com.cztr.routinealarm.support.awaitTestOutputStopped
 import android.content.Intent
 import android.os.Looper
 import android.view.View
@@ -77,11 +79,12 @@ class RestoredAlarmRuntimeTest {
         try {
             service.get().onStartCommand(Intent().setAction(TestAlarmService.REFRESH), 0, 1)
             service.get().onInit(android.speech.tts.TextToSpeech.SUCCESS)
+            awaitTestOutput(service)
             assertNull(shadowOf(context.getSystemService(NotificationManager::class.java))
                 .getNotification(TestAlarmService.NOTIFICATION))
             assertEquals(OccurrenceStatus.TRIGGERED, repo.get(item.id)!!.status)
             assertFalse(repo.isDeliveryAllowed(item.id))
-        } finally { service.destroy() }
+        } finally { service.destroy(); awaitTestOutputStopped(service) }
     }
 
     @Test fun activationIssuesNewTokenAndOldTokenStaysInvalidAfterActivation() {

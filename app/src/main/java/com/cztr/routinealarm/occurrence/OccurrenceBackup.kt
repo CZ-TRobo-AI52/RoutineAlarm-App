@@ -53,7 +53,17 @@ internal object OccurrenceBackup {
                             val value = when (cursor.getType(index)) {
                                 Cursor.FIELD_TYPE_NULL -> { require(column.nullable); null }
                                 Cursor.FIELD_TYPE_INTEGER -> { require(column.integer); cursor.getLong(index) }
-                                Cursor.FIELD_TYPE_STRING -> { require(!column.integer); cursor.getString(index) }
+                                Cursor.FIELD_TYPE_STRING -> {
+                                    require(!column.integer)
+                                    val raw = cursor.getString(index)
+                                    // An installation's live output handle is never portable request authority.
+                                    if (table.name == "occurrences" && column.name == "snapshot") {
+                                        val value = JSONObject(raw)
+                                        if (value.has("outputInstance")) {
+                                            value.remove("outputInstance"); value.toString()
+                                        } else raw
+                                    } else raw
+                                }
                                 else -> error("Unsupported stored value")
                             }
                             bytes += if (value is String) utf8(value).size + 5L else 9L
@@ -203,7 +213,8 @@ internal object OccurrenceBackup {
                     row.number("expected_revision") == 0L && row.number("expected_generation") == 0L && row["snooze_minutes"] == null &&
                     row["result_reason"] == null && row["reason"] == null && row.text("source").isNotBlank() && occurred == result.lastUpdatedAt)
                 require(result.status == OccurrenceStatus.SCHEDULED && result.revision == 0L && result.generation == 0L &&
-                    result.snoozeCount == 0 && result.totalSnoozeMinutes == 0 && result.currentTriggerAt == result.plannedAt)
+                    result.snoozeCount == 0 && result.totalSnoozeMinutes == 0 && result.currentTriggerAt == result.plannedAt &&
+                    result.outputSilencedGeneration == null)
             } else {
                 require(encodedAction != null)
                 val action = action(encodedAction)

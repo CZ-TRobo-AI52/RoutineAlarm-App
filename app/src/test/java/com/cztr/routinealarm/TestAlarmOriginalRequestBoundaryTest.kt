@@ -13,6 +13,8 @@ import android.widget.TextView
 import com.cztr.routinealarm.execution.TestAlarmActivity
 import com.cztr.routinealarm.execution.TestAlarmRuntime
 import com.cztr.routinealarm.execution.TestAlarmService
+import com.cztr.routinealarm.support.awaitTestOutput
+import com.cztr.routinealarm.support.awaitTestOutputStopped
 import com.cztr.routinealarm.occurrence.*
 import org.junit.After
 import org.junit.Assert.*
@@ -61,7 +63,7 @@ class TestAlarmOriginalRequestBoundaryTest {
         UiReadDatabaseGate.releaseAll()
         screens.forEach { it.destroy() }
         executors.forEach { assertTrue(it.awaitTermination(10, TimeUnit.SECONDS)) }
-        services.forEach { it.destroy() }
+        services.forEach { it.destroy(); awaitTestOutputStopped(it) }
         shadowOf(Looper.getMainLooper()).idle()
         UiReadDatabaseGate.reset()
         app.deleteDatabase("occurrences.db")
@@ -246,6 +248,7 @@ class TestAlarmOriginalRequestBoundaryTest {
         services.add(service)
         service.get().onStartCommand(TestAlarmRuntime.putToken(
             Intent(app, TestAlarmService::class.java), token), 0, 1)
+        awaitTestOutput(service)
         val note: Notification = shadowOf(app.getSystemService(NotificationManager::class.java))
             .getNotification(TestAlarmService.NOTIFICATION)!!
         val action = note.actions.single { it.title.toString() == "Erledigt" }

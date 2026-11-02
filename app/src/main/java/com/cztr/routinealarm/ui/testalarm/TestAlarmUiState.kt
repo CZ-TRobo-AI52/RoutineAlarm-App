@@ -31,7 +31,7 @@ sealed interface TestAlarmUiState {
     data class Loading(val title: String) : TestAlarmUiState
     data class Invalid(val title: String, val detail: String) : TestAlarmUiState
     data class Error(val message: String, val title: String = "Verlauf nicht verfügbar") : TestAlarmUiState
-    data class NotificationActions(val title: String, val stage: MenuStage) : TestAlarmUiState
+    data class NotificationActions(val title: String, val stage: MenuStage, val outputCloseAvailable: Boolean = false) : TestAlarmUiState
     data class Active(
         val title: String,
         val spokenText: String?,

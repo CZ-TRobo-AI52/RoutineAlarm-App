@@ -10,6 +10,8 @@ import android.widget.Button
 import com.cztr.routinealarm.AlarmScheduler
 import com.cztr.routinealarm.PersonalSchedule
 import com.cztr.routinealarm.execution.*
+import com.cztr.routinealarm.support.awaitTestOutput
+import com.cztr.routinealarm.support.awaitTestOutputStopped
 import com.cztr.routinealarm.support.awaitUi
 import com.cztr.routinealarm.support.awaitUiReadersStopped
 import org.junit.After
@@ -120,16 +122,20 @@ class TestAlarmIntegrationTest {
         val service = Robolectric.buildService(TestAlarmService::class.java).create()
         try {
             service.get().onStartCommand(intent(a, TestAlarmService::class.java), 0, 1)
+            awaitTestOutput(service)
             assertEquals(AlarmDelivery.from(a), notificationToken())
             service.get().onStartCommand(intent(b, TestAlarmService::class.java), 0, 2)
+            awaitTestOutput(service)
             assertEquals(AlarmDelivery.from(a), notificationToken())
             TestAlarmRuntime.coordinator(repo).act(AlarmDelivery.from(a), ActionType.DONE)
             service.get().onStartCommand(Intent().setAction(TestAlarmService.REFRESH), 0, 3)
+            awaitTestOutput(service)
             assertEquals(AlarmDelivery.from(b), notificationToken())
             service.get().onStartCommand(intent(a, TestAlarmService::class.java), 0, 4)
+            awaitTestOutput(service)
             assertEquals(AlarmDelivery.from(b), notificationToken())
             assertEquals(OccurrenceStatus.TRIGGERED, repo.get(b.id)!!.status)
-        } finally { service.destroy() }
+        } finally { service.destroy(); awaitTestOutputStopped(service) }
     }
 
     @Test fun serviceRejectsDeliveryCompletedBetweenReceiverAndService() {
@@ -138,8 +144,9 @@ class TestAlarmIntegrationTest {
         val service = Robolectric.buildService(TestAlarmService::class.java).create()
         try {
             service.get().onStartCommand(intent(item, TestAlarmService::class.java), 0, 1)
+            awaitTestOutput(service)
             assertNull(notificationToken())
-        } finally { service.destroy() }
+        } finally { service.destroy(); awaitTestOutputStopped(service) }
     }
 
     @Test fun activityDoneRecordsExplicitUserActionAndSurvivesReopen() {

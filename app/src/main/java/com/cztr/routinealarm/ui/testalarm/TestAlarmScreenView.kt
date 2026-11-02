@@ -94,8 +94,10 @@ class TestAlarmScreenView(
                 root.addView(text("TESTWECKER", R52Typography.LABEL, true))
                 root.addView(text(state.title, R52Typography.SCREEN_TITLE, true))
                 NotificationMenu.buttons(state.stage, setOf(NotificationOperation.DONE,
-                    NotificationOperation.SKIP, NotificationOperation.SNOOZE)).forEach { item ->
-                    root.addView(button(item.label, TestAlarmUiAction.NotificationChoice(item.choice)), fullWidth(8))
+                    NotificationOperation.SKIP, NotificationOperation.SNOOZE) +
+                    (if (state.outputCloseAvailable) setOf(NotificationOperation.CLOSE_OUTPUT) else emptySet())).forEach { item ->
+                    root.addView(button(if (item.choice == com.cztr.routinealarm.ui.notification.MenuChoice.CLOSE) "Ausgabe beenden" else item.label,
+                        TestAlarmUiAction.NotificationChoice(item.choice)), fullWidth(8))
                 }
                 root.addView(button("Testverlauf öffnen", TestAlarmUiAction.OPEN_HISTORY), fullWidth(8))
             }

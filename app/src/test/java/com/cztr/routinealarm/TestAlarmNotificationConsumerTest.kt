@@ -4,6 +4,8 @@ import android.app.AlarmManager
 import android.app.Application
 import android.app.Notification
 import android.app.NotificationManager
+import com.cztr.routinealarm.support.awaitTestOutput
+import com.cztr.routinealarm.support.awaitTestOutputStopped
 import android.content.Intent
 import android.os.Bundle
 import android.os.Looper
@@ -59,7 +61,7 @@ class TestAlarmNotificationConsumerTest {
         UiReadDatabaseGate.releaseAll()
         screens.forEach { it.destroy() }
         executors.forEach { assertTrue(it.awaitTermination(10, TimeUnit.SECONDS)) }
-        services.forEach { it.destroy() }
+        services.forEach { it.destroy(); awaitTestOutputStopped(it) }
         shadowOf(Looper.getMainLooper()).idle()
         UiReadDatabaseGate.reset()
         context.deleteDatabase("occurrences.db")
@@ -431,6 +433,7 @@ class TestAlarmNotificationConsumerTest {
         val value = TestAlarmRuntime.putToken(Intent(context, TestAlarmService::class.java), token(item))
         val service = Robolectric.buildService(TestAlarmService::class.java).create()
         services.add(service); service.get().onStartCommand(value, 0, 1)
+        awaitTestOutput(service)
         return shadowOf(context.getSystemService(NotificationManager::class.java)).getNotification(TestAlarmService.NOTIFICATION)!!
     }
     private fun action(note: Notification, label: String): Intent {

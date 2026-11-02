@@ -7,7 +7,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 
 enum class OccurrenceStatus { SCHEDULED, TRIGGERED, SNOOZED, DONE, SKIPPED, MISSED }
-enum class ActionType { TRIGGER, DONE, SKIP, SNOOZE, MISS }
+enum class ActionType { TRIGGER, DONE, SKIP, SNOOZE, MISS, CLOSE_OUTPUT }
 enum class Actor { USER, SYSTEM }
 enum class Outcome { APPLIED, REJECTED, CONFLICT }
 
@@ -33,7 +33,8 @@ data class RoutineOccurrence(
     val spokenText: String,
     val category: EventCategory,
     val mode: EventMode,
-    val isTest: Boolean = false
+    val isTest: Boolean = false,
+    val outputSilencedGeneration: Long? = null
 )
 
 /** occurredAt records the observation; repository Clock supplies the independent recordedAt. */
@@ -47,7 +48,8 @@ data class ExecutionAction(
     val expectedGeneration: Long,
     val snoozeMinutes: Int? = null,
     val source: String = "local",
-    val reason: String? = null
+    val reason: String? = null,
+    val outputInstanceId: String? = null
 )
 
 data class Transition(val outcome: Outcome, val occurrence: RoutineOccurrence, val reason: String? = null)
@@ -77,6 +79,7 @@ object OccurrenceTransitions {
             return reject("clock_reconciliation_required")
         }
         if (action.type != ActionType.SNOOZE && action.snoozeMinutes != null) return reject("unexpected_snooze_minutes")
+        if (action.type != ActionType.CLOSE_OUTPUT && action.outputInstanceId != null) return reject("unexpected_output_instance")
         val newStatus = when (action.type) {
             ActionType.TRIGGER -> {
                 if (action.actor != Actor.SYSTEM) return reject("system_trigger_required")
@@ -103,6 +106,14 @@ object OccurrenceTransitions {
             }
             // Missing receiver evidence does not prove a missed personal action. M2.2 must
             // supply an explicit due policy and delivery evidence before enabling this path.
+            ActionType.CLOSE_OUTPUT -> {
+                if (action.actor != Actor.USER || !current.isTest) return reject("test_user_output_close_required")
+                if (current.status != OccurrenceStatus.TRIGGERED) return reject("output_not_triggered")
+                if (runCatching { java.util.UUID.fromString(action.outputInstanceId) }.isFailure)
+                    return reject("invalid_output_instance")
+                if (current.outputSilencedGeneration == current.generation) return reject("output_already_suppressed")
+                OccurrenceStatus.TRIGGERED
+            }
             ActionType.MISS -> return reject("miss_policy_not_configured")
         }
         return try {
@@ -117,9 +128,11 @@ object OccurrenceTransitions {
                 snoozeCount = if (snooze) Math.addExact(current.snoozeCount, 1) else current.snoozeCount,
                 totalSnoozeMinutes = if (snooze) Math.addExact(current.totalSnoozeMinutes, action.snoozeMinutes!!)
                     else current.totalSnoozeMinutes,
-                lastUpdatedAt = observedAt
+                lastUpdatedAt = observedAt,
+                outputSilencedGeneration = if (action.type == ActionType.CLOSE_OUTPUT) current.generation
+                    else current.outputSilencedGeneration
             )
-            Transition(Outcome.APPLIED, result)
+            Transition(Outcome.APPLIED, result, if (action.type == ActionType.CLOSE_OUTPUT) "UNKNOWN_EFFECT" else null)
         } catch (_: ArithmeticException) {
             reject("counter_or_time_overflow")
         } catch (_: java.time.DateTimeException) {
