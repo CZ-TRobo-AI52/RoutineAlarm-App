@@ -14,6 +14,8 @@ import java.util.concurrent.Executors
 /** A small queue of persisted test occurrences; UI never sends a global STOP. */
 class TestAlarmService : Service(), TextToSpeech.OnInitListener {
     companion object {
+        const val CLOSE_OUTPUT = "com.cztr.routinealarm.TEST_OUTPUT_CLOSE"
+        const val STOP_KEY = "test-alarm.stop-permit.v1"
         const val REFRESH = "com.cztr.routinealarm.TEST_REFRESH"
         const val CHANNEL = "test_execution_alarm"
         const val NOTIFICATION = 1003
@@ -48,6 +50,20 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == CLOSE_OUTPUT) {
+            val accepted = TestOutputAdmission.consumeOutputClose(intent.getStringExtra(STOP_KEY),
+                outputSession, current, TestAlarmRuntime.token(intent)) {
+                handler.removeCallbacks(repeat)
+                refreshGeneration++
+                current = null
+                TestOutputAdmission.retireOutput(outputSession)
+                runCatching { tts?.stop() }.onFailure { Log.e("TestAlarm", "Tonende nicht bestätigt", it) }
+                // Other already-triggered occurrences retain their own authority and queue.
+                refreshOutput(speakNow = true)
+            }
+            if (!accepted && !started && current == null) stopSelf()
+            return START_NOT_STICKY
+        }
         try {
             // An unvalidated arrival must not erase actions of an admitted output.
             if (current == null) foreground(Notification.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
@@ -123,6 +139,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
         try {
             if (selected == null) { shutdown(); return }
             val (item, token) = selected
+            if (!TestOutputAdmission.publishOutput(outputSession, token)) return
             val changed = token != current
             if (changed) tts?.stop()
             current = token
@@ -131,6 +148,8 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
                     PowerManager.PARTIAL_WAKE_LOCK, "RoutineAlarm:TestExecution").apply { acquire(30 * 60 * 1000L) }
             }
             val screen = TestAlarmRuntime.putToken(Intent(this, TestAlarmActivity::class.java), token)
+                .setAction(TestAlarmNotification.SCREEN + outputSession)
+                .putExtra(TestAlarmNotification.OUTPUT_INSTANCE, outputSession)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             val pending = PendingIntent.getActivity(this, 0, screen,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -139,7 +158,7 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
                 .setContentText("Erledigen, überspringen oder verschieben")
                 .setContentIntent(pending).setCategory(Notification.CATEGORY_ALARM)
                 .setOngoing(true).setOnlyAlertOnce(!changed)
-                .apply { TestAlarmNotification.actions(this@TestAlarmService, token).forEach { addAction(it) } }
+                .apply { TestAlarmNotification.actions(this@TestAlarmService, token, outputSession).forEach { addAction(it) } }
                 .apply { if (changed) setFullScreenIntent(pending, true) }.build()
             foreground(notification)
             if (ready && speakNow) {
@@ -184,13 +203,16 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
         started = false
         refreshGeneration++
         handler.removeCallbacks(repeat)
-        tts?.stop()
+        val hadOutput = current != null
         current = null
+        TestOutputAdmission.retireOutput(outputSession)
+        if (hadOutput) runCatching { tts?.stop() }.onFailure { Log.e("TestAlarm", "Tonende nicht bestätigt", it) }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
 
     override fun onDestroy() {
+        val hadOutput = current != null
         destroyed = true
         TestOutputAdmission.releaseSession(outputSession)
         started = false
@@ -199,8 +221,8 @@ class TestAlarmService : Service(), TextToSpeech.OnInitListener {
         ready = false
         current = null
         handler.removeCallbacksAndMessages(null)
-        tts?.stop()
-        tts?.shutdown()
+        if (hadOutput) runCatching { tts?.stop() }
+        runCatching { tts?.shutdown() }
         wakeLock?.takeIf { it.isHeld }?.release()
         super.onDestroy()
     }

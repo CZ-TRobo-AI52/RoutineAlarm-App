@@ -18,6 +18,18 @@ object TestAlarmRuntime {
     private const val REVISION = "occurrence_revision"
     private const val EPOCH = "occurrence_epoch"
 
+    /** Best-effort one-shot transport. The permit is never persisted or recovered from history. */
+    internal fun requestOutputClose(context: Context, action: ExecutionAction, result: ActionResult,
+        ticket: Long): Boolean {
+        val key = TestOutputAdmission.issueOutputClose(action, result, ticket) ?: return false
+        val token = AlarmDelivery(action.occurrenceId, action.expectedGeneration, action.expectedRevision,
+            StableTestAlarmActions.epoch(action))
+        val sent = runCatching { context.startService(putToken(Intent(context, TestAlarmService::class.java)
+            .setAction(TestAlarmService.CLOSE_OUTPUT).putExtra(TestAlarmService.STOP_KEY, key), token)) != null }.getOrDefault(false)
+        if (!sent) TestOutputAdmission.revokeOutputClose(key)
+        return sent
+    }
+
     fun repository(context: Context) = SqliteOccurrenceRepository(context, Clock.systemDefaultZone())
     fun coordinator(repo: OccurrenceRepository) = TestAlarmCoordinator(repo, Clock.systemDefaultZone())
 

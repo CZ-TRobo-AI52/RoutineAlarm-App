@@ -10,17 +10,20 @@ import com.cztr.routinealarm.ui.notification.*
 /** Android transport for the existing test-only menu. No clock, journal or execution authority. */
 internal object TestAlarmNotification {
     const val ROUTE = "test-alarm.notification-route.v1"
+    const val OUTPUT_INSTANCE = "test-alarm.output-instance.v1"
+    const val SCREEN = "com.cztr.routinealarm.TEST_OUTPUT_SCREEN."
     private const val ACTION = "com.cztr.routinealarm.TEST_NOTIFICATION."
-    val allowed = setOf(NotificationOperation.DONE, NotificationOperation.SKIP, NotificationOperation.SNOOZE)
+    val allowed = setOf(NotificationOperation.DONE, NotificationOperation.SKIP, NotificationOperation.SNOOZE, NotificationOperation.CLOSE_OUTPUT)
 
     fun route(token: AlarmDelivery, stage: MenuStage, choice: MenuChoice) = NotificationActionRoute(
         requireNotNull(TestAlarmRuntime.putToken(Intent(), token).dataString),
         "TEST", token.revision.toString(), stage, choice,
     )
 
-    fun intent(context: Context, token: AlarmDelivery, route: NotificationActionRoute): Intent =
+    fun intent(context: Context, token: AlarmDelivery, route: NotificationActionRoute, outputInstance: String? = null): Intent =
         TestAlarmRuntime.putToken(Intent(context, TestAlarmActivity::class.java), token)
-            .setAction(ACTION + NotificationActionRoutes.requestKey(route))
+            .setAction(ACTION + NotificationActionRoutes.requestKey(route) + (outputInstance?.let { "." + it } ?: ""))
+            .apply { if (outputInstance != null) putExtra(OUTPUT_INSTANCE, outputInstance) }
             .putExtra(ROUTE, NotificationActionRoutes.encode(route))
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
 
@@ -34,14 +37,25 @@ internal object TestAlarmNotification {
         val route = requireNotNull(NotificationActionRoutes.decode(requireNotNull(value.getStringExtra(ROUTE))))
         require(route.deliveryDataUri == value.dataString && route.scopeKey == "TEST" &&
             route.planRevision == token.revision.toString())
-        require(value.action == ACTION + NotificationActionRoutes.requestKey(route))
+        val instance = outputInstance(value)
+        require(!value.hasExtra(OUTPUT_INSTANCE) || instance != null)
+        require(value.action == ACTION + NotificationActionRoutes.requestKey(route) + (instance?.let { "." + it } ?: ""))
+        if (route.choice == MenuChoice.CLOSE) require(instance != null)
         require(NotificationActionRoutes.selection(route, allowed) != MenuSelection.Rejected)
         route
     }.getOrNull()
 
-    fun actions(context: Context, token: AlarmDelivery): List<Notification.Action> =
+    fun outputInstance(value: Intent): String? = runCatching {
+        val id = requireNotNull(value.getStringExtra(OUTPUT_INSTANCE))
+        require(java.util.UUID.fromString(id).toString() == id)
+        val action = requireNotNull(value.action)
+        require(action == SCREEN + id || action.startsWith(ACTION) && action.endsWith("." + id))
+        id
+    }.getOrNull()
+
+    fun actions(context: Context, token: AlarmDelivery, outputInstance: String? = null): List<Notification.Action> =
         NotificationMenu.buttons(MenuStage.ROOT, allowed).map { button ->
-            val target = intent(context, token, route(token, MenuStage.ROOT, button.choice))
+            val target = intent(context, token, route(token, MenuStage.ROOT, button.choice), outputInstance)
             val pending = PendingIntent.getActivity(context, 0, target,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
             Notification.Action.Builder(null, button.label, pending).build()

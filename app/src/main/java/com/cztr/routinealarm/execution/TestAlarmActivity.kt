@@ -26,6 +26,7 @@ class TestAlarmActivity : Activity() {
         const val NOTIFICATION_STAGE = "test-alarm.notification-stage.v1"
     }
     private var token: AlarmDelivery? = null
+    private var outputInstance: String? = null
     private var tokenWasSupplied = false
     private var historyOffset = 0
     private var currentPage: TestAlarmHistoryPage? = null
@@ -77,7 +78,8 @@ class TestAlarmActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         pendingAction?.let { outState.putString(PENDING_ACTION, OccurrenceCodec.encode(it)) }
         outState.putBoolean(INVALID_PENDING_ACTION, invalidPendingAction)
-        notificationStage?.let { outState.putString(NOTIFICATION_STAGE, it.name) }
+        if (pendingAction == null && !actionInFlight)
+            notificationStage?.let { outState.putString(NOTIFICATION_STAGE, it.name) }
         super.onSaveInstanceState(outState)
     }
 
@@ -129,6 +131,7 @@ class TestAlarmActivity : Activity() {
         screenRevision++
         historyCommandInFlight = false
         token = TestAlarmRuntime.token(value)
+        outputInstance = TestAlarmNotification.outputInstance(value)
         tokenWasSupplied = value.data != null
         currentPage = null
         notificationStage = null
@@ -219,7 +222,7 @@ class TestAlarmActivity : Activity() {
                             currentPage = null
                             val active = read.occurrence
                             val menu = notificationStage
-                            if (active != null && menu != null) show(TestAlarmUiState.NotificationActions(active.title, menu))
+                            if (active != null && menu != null) show(TestAlarmUiState.NotificationActions(active.title, menu, outputInstance != null))
                             else show(TestAlarmUiMapper.active(
                                 title = active?.title ?: "Dieser Testwecker ist nicht mehr aktiv",
                                 spokenText = active?.spokenText,
@@ -324,14 +327,16 @@ class TestAlarmActivity : Activity() {
                 NotificationOperation.DONE -> ActionType.DONE
                 NotificationOperation.SKIP -> ActionType.SKIP
                 NotificationOperation.SNOOZE -> ActionType.SNOOZE
-                NotificationOperation.CLOSE_OUTPUT -> return
+                NotificationOperation.CLOSE_OUTPUT -> if (outputInstance != null) ActionType.CLOSE_OUTPUT else return
             }
-            val key = NotificationActionRoutes.requestKey(route)
+            val key = NotificationActionRoutes.requestKey(route) +
+                (if (type == ActionType.CLOSE_OUTPUT) "." + outputInstance else "")
             FrozenActionBinding(key, StableTestAlarmActions.freeze("test-user:$key", expected,
-                type, Instant.now(), selection.snoozeMinutes))
+                type, Instant.now(), selection.snoozeMinutes,
+                if (type == ActionType.CLOSE_OUTPUT) outputInstance else null))
         } else null
         when (val prepared = NotificationActionAdapter.prepare(NotificationActionRoutes.encode(route),
-            TestAlarmRuntime.putToken(Intent(), expected), frozen, TestAlarmNotification.allowed)) {
+            TestAlarmRuntime.putToken(Intent(), expected), frozen, TestAlarmNotification.allowed, outputInstance)) {
             is PreparedNotification.Navigate -> notificationStage = prepared.stage
             is PreparedNotification.ActionCandidate -> pendingAction = prepared.originalAction
             else -> invalidNotification = true
@@ -438,7 +443,7 @@ class TestAlarmActivity : Activity() {
         show(TestAlarmUiState.Loading("Speicherung wird geprüft …"))
         val app = applicationContext
         val admitted = reader.submit({ commitAction(app, action) }) { answer ->
-            if (isFinishing || isDestroyed || pendingAction != action) return@submit
+            if (isFinishing || isDestroyed || pendingAction != action || !matchesDelivery(action, token)) return@submit
             actionInFlight = false
             // The original request remains available for an explicit journal retry on resume.
             if (stopped) return@submit
@@ -451,6 +456,10 @@ class TestAlarmActivity : Activity() {
                     }
                     completed.result.outcome != Outcome.APPLIED -> {
                         toast("Testwecker wurde bereits geändert. Bitte aktuellen Verlauf öffnen.")
+                        openHistory()
+                    }
+                    action.type == ActionType.CLOSE_OUTPUT -> {
+                        toast("Für diese Auslösung dauerhaft stumm gespeichert. Tonende nicht bestätigt.")
                         openHistory()
                     }
                     completed.followUpUnconfirmed -> {
@@ -485,11 +494,18 @@ class TestAlarmActivity : Activity() {
         }
         // A historical journal result never grants another scheduling or output effect.
         if (result.duplicate || result.outcome != Outcome.APPLIED) return CommittedAction(result, false)
+        val closeTicket = if (action.type == ActionType.CLOSE_OUTPUT) TestOutputAdmission.ticket() else null
         val stillCurrent = TestAlarmRuntime.repository(app).use { repo ->
             repo.deliveryEpoch() == StableTestAlarmActions.epoch(action) &&
                 repo.isDeliveryAllowed(action.occurrenceId) && repo.get(action.occurrenceId) == result.occurrence
         }
         if (!stillCurrent) return CommittedAction(result, true)
+        if (action.type == ActionType.CLOSE_OUTPUT) {
+            if (closeTicket != null) TestAlarmRuntime.requestOutputClose(app, action, result, closeTicket)
+            // Enqueue/stop API return is not a physical acknowledgement. No generic refresh,
+            // reconcile, DONE or SKIP may be authorized by this Close request.
+            return CommittedAction(result, true)
+        }
         var unconfirmed = false
         if (action.type == ActionType.SNOOZE) {
             unconfirmed = runCatching { TestAlarmRuntime.schedule(app, result.occurrence) }.isFailure
@@ -502,7 +518,8 @@ class TestAlarmActivity : Activity() {
     private fun matchesDelivery(action: ExecutionAction, delivery: AlarmDelivery?): Boolean =
         delivery != null && runCatching {
             AlarmDelivery(action.occurrenceId, action.expectedGeneration, action.expectedRevision,
-                StableTestAlarmActions.epoch(action)) == delivery
+                StableTestAlarmActions.epoch(action)) == delivery &&
+                (action.type != ActionType.CLOSE_OUTPUT || action.outputInstanceId == outputInstance)
         }.getOrDefault(false)
 
     private fun showUnconfirmedAction() {

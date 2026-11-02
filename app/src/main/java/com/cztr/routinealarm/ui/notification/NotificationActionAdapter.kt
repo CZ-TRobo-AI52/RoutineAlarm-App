@@ -22,7 +22,7 @@ object NotificationActionAdapter {
     /** Structural preparation only. An authorized Core consumer must revalidate current state.
      * The original full action must be recovered by that consumer; no UUID, clock or store lives here.
      */
-    fun prepare(routeData:String?,original:Intent?,frozen:FrozenActionBinding?,allowed:Set<NotificationOperation>):PreparedNotification {
+    fun prepare(routeData:String?,original:Intent?,frozen:FrozenActionBinding?,allowed:Set<NotificationOperation>,outputInstanceId:String?=null):PreparedNotification {
         fun reject(error:PreparationError)=PreparedNotification.Rejected(error)
         val route=routeData?.let(NotificationActionRoutes::decode)
             ?:return reject(PreparationError.INVALID_ROUTE)
@@ -33,8 +33,8 @@ object NotificationActionAdapter {
         val selection=NotificationActionRoutes.selection(route,allowed)
         if(selection is MenuSelection.Navigate)return PreparedNotification.Navigate(selection.stage)
         if(selection !is MenuSelection.Request)return reject(PreparationError.OPERATION_NOT_AVAILABLE)
-        val key=NotificationActionRoutes.requestKey(route)
-        if(selection.operation==NotificationOperation.CLOSE_OUTPUT)
+        val key=NotificationActionRoutes.requestKey(route)+(if(selection.operation==NotificationOperation.CLOSE_OUTPUT && outputInstanceId!=null) "."+outputInstanceId else "")
+        if(selection.operation==NotificationOperation.CLOSE_OUTPUT && outputInstanceId==null)
             return PreparedNotification.OutputCloseUnavailable(key,token)
         val binding=frozen ?:return reject(PreparationError.MISSING_FROZEN_ACTION)
         if(binding.requestKey!=key)return reject(PreparationError.REQUEST_MISMATCH)
@@ -42,14 +42,16 @@ object NotificationActionAdapter {
             NotificationOperation.DONE->ActionType.DONE
             NotificationOperation.SKIP->ActionType.SKIP
             NotificationOperation.SNOOZE->ActionType.SNOOZE
-            NotificationOperation.CLOSE_OUTPUT->error("Handled before action binding")
+            NotificationOperation.CLOSE_OUTPUT->ActionType.CLOSE_OUTPUT
         }
         val action=binding.originalAction
         val validTime=try { action.occurredAt.toEpochMilli();true } catch (_:ArithmeticException) { false }
         if(action.id.isBlank() || action.id.startsWith("schedule:") || action.source.isBlank() ||
             action.actor!=Actor.USER || !validTime || action.occurrenceId!=token.occurrenceId ||
             action.expectedRevision!=token.revision || action.expectedGeneration!=token.generation ||
-            action.type!=expected || action.snoozeMinutes!=selection.snoozeMinutes)
+            action.type!=expected || action.snoozeMinutes!=selection.snoozeMinutes ||
+            action.outputInstanceId!=(if(expected==ActionType.CLOSE_OUTPUT) outputInstanceId else null) ||
+            expected==ActionType.CLOSE_OUTPUT && runCatching { java.util.UUID.fromString(outputInstanceId) }.isFailure)
             return reject(PreparationError.PAYLOAD_MISMATCH)
         return PreparedNotification.ActionCandidate(key,token,route.scopeKey,route.planRevision,action,snapshot)
     }
