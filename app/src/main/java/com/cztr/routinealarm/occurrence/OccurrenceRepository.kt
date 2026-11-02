@@ -13,6 +13,8 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.UUID
+import com.cztr.routinealarm.RoutineEvent
+import com.cztr.routinealarm.ScheduleRegistry
 
 interface OccurrenceRepository : Closeable {
     fun deliveryEpoch(): String = ""
@@ -100,9 +102,50 @@ class SqliteOccurrenceRepository(
     fun personalPlanAuthority(scope: OccurrenceScope.PersonalEvent): PersonalPlanAuthority =
         readSnapshot { PersonalPlanPersistence.read(it, scope.eventId) }
 
+    /** Worker-thread snapshot APIs. No activation or scheduling side effects. */
+    fun listPersonalRoutines(): List<PersonalRoutineRecord> = readSnapshot { PersonalRoutinePersistence.list(it) }
+    fun readPersonalRoutine(eventId: String): PersonalRoutineRecord? =
+        readSnapshot { PersonalRoutinePersistence.read(it, eventId) }
+
+    fun savePersonalRoutine(input: PersonalRoutineSaveRequest): PersonalRoutineSaveResult = transaction { db ->
+        val request = input.copy(event = PersonalRoutinePersistence.decode(PersonalRoutinePersistence.encode(input.event)))
+        require(request.stableRequestId.isNotBlank() && request.stableRequestId.length <= 256)
+        require(request.expectedVersion >= 0 && request.expectedPlanVersion >= 0)
+        require(request.event.id.length <= 256 && request.event.title.length <= 4096 && request.event.spokenText.length <= 16384)
+        require(ScheduleRegistry.byId(request.event.id) == null ||
+            com.cztr.routinealarm.PersonalSchedule.allEvents.any { it.id == request.event.id }) { "Nonpersonal ID collision" }
+        val actual = PersonalRoutinePersistence.read(db, request.event.id)
+        if (request.expectedRestoreEpoch != PersonalRoutinePersistence.epoch(db))
+            return@transaction PersonalRoutineSaveResult.Conflict(actual, "RESTORE_EPOCH")
+        PersonalRoutinePersistence.duplicate(db, request)?.let {
+            return@transaction PersonalRoutineSaveResult.Saved(it, true)
+        }
+        if (actual?.quarantined == true) return@transaction PersonalRoutineSaveResult.Conflict(actual, "RESTORE_QUARANTINE")
+        if (request.expectedVersion != (actual?.version ?: 0L))
+            return@transaction PersonalRoutineSaveResult.Conflict(actual, "DEFINITION_VERSION")
+        val scope = OccurrenceScope.PersonalEvent(request.event.id)
+        val authority = PersonalPlanPersistence.read(db, scope.eventId)
+        if (authority.version != request.expectedPlanVersion)
+            return@transaction PersonalRoutineSaveResult.Conflict(actual, "PLAN_VERSION")
+        val nextVersion = Math.addExact(request.expectedVersion, 1L)
+        // Unique revision binds this explicit paused save; it cannot resurrect any previous plan.
+        val revision = "studio:" + UUID.randomUUID().toString()
+        val plan = replacePersonalPlan(db, scope, authority.version, emptyList(), revision,
+            clock.zone, clock.instant()) as PersonalPlanDecision.Ready
+        val event = PersonalRoutinePersistence.decode(PersonalRoutinePersistence.encode(request.event.copy(enabled = false)))
+        val record = PersonalRoutineRecord(event, nextVersion, plan.next.version, PersonalRoutinePersistence.epoch(db), false)
+        PersonalRoutinePersistence.insert(db, request, record)
+        PersonalRoutineSaveResult.Saved(record)
+    }
+
     fun replacePersonalPlan(scope: OccurrenceScope.PersonalEvent, expectedVersion: Long,
         candidates: List<RoutineOccurrence>, planRevision: String, zone: ZoneId,
         cutoff: Instant): PersonalPlanDecision = transaction { db ->
+        replacePersonalPlan(db, scope, expectedVersion, candidates, planRevision, zone, cutoff)
+    }
+
+    private fun replacePersonalPlan(db: SQLiteDatabase, scope: OccurrenceScope.PersonalEvent, expectedVersion: Long,
+        candidates: List<RoutineOccurrence>, planRevision: String, zone: ZoneId, cutoff: Instant): PersonalPlanDecision {
         val authority = PersonalPlanPersistence.read(db, scope.eventId)
         val existing = db.query("occurrences", arrayOf("snapshot"), "is_test = 0 AND event_id = ?",
             arrayOf(scope.eventId), null, null, "occurrence_id").use { cursor -> buildList {
@@ -120,7 +163,7 @@ class SqliteOccurrenceRepository(
             }
             PersonalPlanPersistence.commit(db, decision, cutoff, clock.instant())
         }
-        decision
+        return decision
     }
 
     /** Both initial creation and replacement must respect the persisted event-wide restore pause. */
@@ -659,7 +702,7 @@ class SqliteOccurrenceRepository(
 
 /** Schema 5 adds personal authority and monotonic retirement without changing execution evidence. */
 private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHelper(
-    context, name, null, 6,
+    context, name, null, 7,
     DatabaseErrorHandler { throw SQLiteException("Occurrence database is corrupt; original file retained") },
 ) {
     override fun onConfigure(db: SQLiteDatabase) {
@@ -676,9 +719,9 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        check(oldVersion in 1..5 && newVersion == 6) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
+        check(oldVersion in 1..6 && newVersion == 7) { "Unsupported occurrence database upgrade $oldVersion -> $newVersion; no data was deleted" }
         // SQLiteOpenHelper wraps onUpgrade and its version change in one transaction.
-        validate(db, when (oldVersion) { 1 -> V1_SCHEMA; 2 -> V2_SCHEMA; 3 -> V3_SCHEMA; 4 -> V4_SCHEMA; else -> V5_SCHEMA })
+        validate(db, when (oldVersion) { 1 -> V1_SCHEMA; 2 -> V2_SCHEMA; 3 -> V3_SCHEMA; 4 -> V4_SCHEMA; 5 -> V5_SCHEMA; else -> V6_SCHEMA })
         if (oldVersion == 1) SCHEDULING_SCHEMA.values.forEach(db::execSQL)
         if (oldVersion < 3) {
             RESTORE_SCHEMA.values.forEach(db::execSQL)
@@ -686,6 +729,7 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
         }
         if (oldVersion < 4) RECONCILIATION_SCHEMA.values.forEach(db::execSQL)
         if (oldVersion < 5) PersonalPlanPersistence.schema.values.forEach(db::execSQL)
+        if (oldVersion < 6) {
         // Transactional replacement retains all immutable execution rows and sequence values.
         listOf("journal_no_update", "journal_no_delete").forEach { db.execSQL("DROP TRIGGER $it") }
         db.execSQL("DROP INDEX journal_occurrence")
@@ -694,6 +738,8 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
         db.execSQL("INSERT INTO execution_journal SELECT * FROM journal_v5_original")
         db.execSQL("DROP TABLE journal_v5_original")
         listOf("journal_occurrence", "journal_no_update", "journal_no_delete").forEach { db.execSQL(SCHEMA.getValue(it)) }
+        }
+        PersonalRoutinePersistence.schema.values.forEach(db::execSQL)
         validate(db, SCHEMA)
     }
 
@@ -811,8 +857,9 @@ private class OccurrenceDatabase(context: Context, name: String) : SQLiteOpenHel
         )
         private val V4_SCHEMA = V3_SCHEMA + RECONCILIATION_SCHEMA
         private val V5_SCHEMA = V4_SCHEMA + PersonalPlanPersistence.schema
-        private val SCHEMA = V5_SCHEMA + ("execution_journal" to V1_SCHEMA.getValue("execution_journal")
+        private val V6_SCHEMA = V5_SCHEMA + ("execution_journal" to V1_SCHEMA.getValue("execution_journal")
             .replace("'SNOOZE','MISS'", "'SNOOZE','MISS','CLOSE_OUTPUT'"))
+        private val SCHEMA = V6_SCHEMA + PersonalRoutinePersistence.schema
     }
 }
 

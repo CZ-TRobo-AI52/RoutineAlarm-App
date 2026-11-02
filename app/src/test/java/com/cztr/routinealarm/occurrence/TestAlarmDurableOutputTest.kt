@@ -152,7 +152,7 @@ class TestAlarmDurableOutputTest {
         assertEquals("UNKNOWN_EFFECT",submit(close("v5-migration-close",handle)).reason)
         assertEquals(3,repo.history(fired.id).size)
         android.database.sqlite.SQLiteDatabase.openDatabase(app.getDatabasePath("occurrences.db").path,
-            null,android.database.sqlite.SQLiteDatabase.OPEN_READONLY).use { assertEquals(6,it.version) }
+            null,android.database.sqlite.SQLiteDatabase.OPEN_READONLY).use { assertEquals(7,it.version) }
     }
 
     @Test fun failedCommitDoesNotRecordConsentOrSilence() {
@@ -167,6 +167,9 @@ class TestAlarmDurableOutputTest {
 
 /** A genuine historical journal CHECK, with every existing row retained; never relabel v6 as v4/v5. */
 internal fun useHistoricalOutputJournalFixture(db: android.database.sqlite.SQLiteDatabase, version: Int) {
+    db.rawQuery("SELECT COUNT(*) FROM personal_routine_definitions", null).use { it.moveToFirst(); check(it.getInt(0) == 0) }
+    db.execSQL("DROP TRIGGER routine_definitions_no_update"); db.execSQL("DROP TRIGGER routine_definitions_no_delete")
+    db.execSQL("DROP TABLE personal_routine_definitions")
     val field=Class.forName("com.cztr.routinealarm.occurrence.OccurrenceDatabase")
         .getDeclaredField("V${version}_SCHEMA").apply { isAccessible=true }
     @Suppress("UNCHECKED_CAST") val schema=field.get(null) as Map<String,String>

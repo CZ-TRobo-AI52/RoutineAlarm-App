@@ -39,12 +39,13 @@ internal object OccurrenceBackup {
         Table("scheduling_receipts", columns("attempt_id outcome reason recorded_at_exact"), "attempt_id"),
         Table("personal_plan_commits", columns("event_id version: plan_revision fingerprint cutoff_exact recorded_at_exact"), "event_id, version"),
         Table("personal_plan_retirements", columns("occurrence_id event_id plan_version:"), "occurrence_id"),
+        Table("personal_routine_definitions", columns("event_id version: plan_version: snapshot request_id request_payload restore_epoch"), "event_id, version"),
     )
 
     fun read(db: SQLiteDatabase): Snapshot {
         var rowCount = 0
         var bytes = 64L
-        return Snapshot(tables.map { table ->
+        val rows = tables.map { table ->
             db.query(table.name, table.columns.map { it.name }.toTypedArray(), null, null, null, null, table.order).use { cursor ->
                 buildList {
                     while (cursor.moveToNext()) {
@@ -73,16 +74,18 @@ internal object OccurrenceBackup {
                     }
                 }
             }
-        })
+        }
+        return Snapshot(rows, if (rows.last().isEmpty()) 2 else 3)
     }
 
     fun encode(snapshot: Snapshot): ByteArray {
-        require(snapshot.formatVersion in 1..2)
+        require(snapshot.formatVersion in 1..3)
         require(snapshot.tables.size == tables.size)
         if (snapshot.formatVersion == 1) require(snapshot.tables.drop(5).all { it.isEmpty() }) {
             "Legacy backup cannot represent personal authority"
         }
-        val encodedTables = if (snapshot.formatVersion == 1) tables.take(5) else tables
+        if (snapshot.formatVersion < 3) require(snapshot.tables.last().isEmpty()) { "Older backup cannot represent routine definitions" }
+        val encodedTables = tables.take(when (snapshot.formatVersion) { 1 -> 5; 2 -> 7; else -> 8 })
         val payload = ByteArrayOutputStream()
         DataOutputStream(payload).use { output ->
             encodedTables.forEachIndexed { tableIndex, table ->
@@ -118,10 +121,10 @@ internal object OccurrenceBackup {
             val input = DataInputStream(ByteArrayInputStream(data))
             val signature = ByteArray(8).also(input::readFully)
             val version = input.readInt()
-            require(version in 1..2 && signature.contentEquals(magic(version))) { "Unsupported backup format" }
+            require(version in 1..3 && signature.contentEquals(magic(version))) { "Unsupported backup format" }
             require(input.readInt() == input.available()) { "Invalid backup length" }
             var totalRows = 0
-            val decodedTables = (if (version == 1) tables.take(5) else tables).map { table ->
+            val decodedTables = tables.take(when (version) { 1 -> 5; 2 -> 7; else -> 8 }).map { table ->
                 val count = input.readInt()
                 require(count in 0..MAX_ROWS && totalRows + count <= MAX_ROWS && count <= input.available()) { "Invalid record count" }
                 totalRows += count
@@ -139,7 +142,7 @@ internal object OccurrenceBackup {
                     }
                 } }
             }
-            val snapshot = Snapshot(if (version == 1) decodedTables + listOf(emptyList(), emptyList()) else decodedTables, version)
+            val snapshot = Snapshot(decodedTables + List(tables.size - decodedTables.size) { emptyList() }, version)
             require(input.available() == 0) { "Trailing backup content" }
             validate(snapshot)
             return snapshot
@@ -170,6 +173,23 @@ internal object OccurrenceBackup {
                 require(if (value == null) column.nullable else if (column.integer) value is Long else value is String)
                 column.name to value
             }.toMap()
+        }
+        val definitionIds = mutableSetOf<Pair<String, Long>>()
+        val requests = mutableSetOf<String>()
+        val definitionVersions = mutableMapOf<String, Long>()
+        rows(7).forEach { row ->
+            val event = PersonalRoutinePersistence.decode(row.text("snapshot"))
+            require(!event.enabled && event.id == row.text("event_id"))
+            val version = row.number("version")
+            require(version == (definitionVersions[event.id] ?: 0L) + 1)
+            definitionVersions[event.id] = version
+            require(definitionIds.add(event.id to version) && requests.add(row.text("request_id")))
+            require(row.text("request_id").isNotBlank())
+            require(rows(5).any { it.text("event_id") == event.id && it.number("version") == row.number("plan_version") })
+            val request = JSONObject(row.text("request_payload"))
+            require(request.getLong("version") == version - 1 && request.getLong("plan") == row.number("plan_version") - 1)
+            require(PersonalRoutinePersistence.decode(request.getString("event")).copy(enabled = false) == event)
+            require(request.getString("epoch") == row.text("restore_epoch"))
         }
         val revisions = rows(0).associateUnique("revision_id")
         revisions.values.forEach { r ->

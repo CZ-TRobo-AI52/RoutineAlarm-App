@@ -40,6 +40,17 @@ object ScheduleRegistry {
         }
     }
 
+    /** Explicit snapshot provider; reading definitions never schedules or grants activation. */
+    fun personalEvents(definitions: List<RoutineEvent>): List<RoutineEvent> {
+        require(definitions.map { it.id }.distinct().size == definitions.size)
+        require(definitions.none { candidate -> TrainingSchedule.allEvents.any { it.id == candidate.id } })
+        require(definitions.none { it.enabled }) { "Saved definitions require separate explicit activation" }
+        val overrides = definitions.associateBy { it.id }
+        return java.util.Collections.unmodifiableList(
+            PersonalSchedule.allEvents.map { overrides[it.id] ?: it } +
+                definitions.filter { saved -> PersonalSchedule.allEvents.none { it.id == saved.id } })
+    }
+
     val enabledEvents: List<RoutineEvent>
         get() =
             scheduledEvents.filter { it.enabled }
