@@ -49,7 +49,7 @@ class LegacyWeeklyDeliveryTest {
 
     /** Remove the consumed alarm registration, preserving its PendingIntent identity. */
     private fun scheduledDelivery(event: RoutineEvent): Pair<PendingIntent, Intent> {
-        assertTrue(AlarmScheduler.scheduleEvent(context, event, ZonedDateTime.now().minusWeeks(1)))
+        assertTrue(com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleEvent(context, event, ZonedDateTime.now().minusWeeks(1)) })
         val alarm = shadowOf(manager).scheduledAlarms.single()
         val pending = requireNotNull(alarm.operation)
         val intent = Intent(shadowOf(pending).savedIntent)
@@ -69,7 +69,7 @@ class LegacyWeeklyDeliveryTest {
     ) {
         // Receiver uses the real clock. A boundary crossing may legitimately select either deadline.
         val before = ZonedDateTime.now()
-        AlarmReceiver().onReceive(context, intent)
+        run { AlarmReceiver().onReceive(context, intent); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         val after = ZonedDateTime.now()
         val alarm = shadowOf(manager).scheduledAlarms.single()
         assertEquals(previous, alarm.operation)
@@ -130,7 +130,7 @@ class LegacyWeeklyDeliveryTest {
             val (pending, intent) = scheduledDelivery(event)
             ScheduleState.setEnabled(context, false)
 
-            AlarmReceiver().onReceive(context, intent)
+            run { AlarmReceiver().onReceive(context, intent); com.cztr.routinealarm.support.drainRoutineAdmissions() }
 
             assertNoEffects()
             pending.cancel()
@@ -145,7 +145,7 @@ class LegacyWeeklyDeliveryTest {
                 .putExtra(AlarmScheduler.EXTRA_TITLE, "must not start")
             if (eventId != null) intent.putExtra(AlarmScheduler.EXTRA_EVENT_ID, eventId)
 
-            AlarmReceiver().onReceive(context, intent)
+            run { AlarmReceiver().onReceive(context, intent); com.cztr.routinealarm.support.drainRoutineAdmissions() }
 
             assertNoEffects()
         }
@@ -153,13 +153,13 @@ class LegacyWeeklyDeliveryTest {
 
     @Test fun disabledRegistryEventCannotBeScheduledOrDispatchFromAnOldRecurringIntent() {
         val event = PersonalSchedule.allEvents.first { !it.enabled }
-        assertFalse(AlarmScheduler.scheduleEvent(context, event))
+        assertFalse(com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleEvent(context, event) })
         val intent = Intent(context, AlarmReceiver::class.java)
             .putExtra(AlarmScheduler.EXTRA_RECURRING, true)
             .putExtra(AlarmScheduler.EXTRA_EVENT_ID, event.id)
             .putExtra(AlarmScheduler.EXTRA_TITLE, "must not start")
 
-        AlarmReceiver().onReceive(context, intent)
+        run { AlarmReceiver().onReceive(context, intent); com.cztr.routinealarm.support.drainRoutineAdmissions() }
 
         assertNoEffects()
     }

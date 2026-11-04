@@ -33,9 +33,59 @@ object ScheduleState {
     }
     private val transitionLock = Any()
     // Application-owned commands survive render/onStop/onDestroy.
+    private val onStorageWorker = ThreadLocal<Boolean>()
     private val writes: ExecutorService = Executors.newSingleThreadExecutor { task ->
-        Thread(task, "weekly-preference-writes").apply { isDaemon = true }
+        Thread({ onStorageWorker.set(true); task.run() }, "weekly-preference-writes").apply { isDaemon = true }
     }
+
+    /** Compatibility reads reuse the existing application worker, never SQLite on the caller/UI thread.
+     * UI hosts should call the repository through their asynchronous snapshot loader. No cache is authority.
+     */
+    internal fun <T> readRoutineStorage(block: () -> T): T =
+        if (Looper.myLooper() == Looper.getMainLooper()) error("Routine storage reads require a worker") else block()
+
+    internal fun dispatchStorage(block: () -> Unit) {
+        writes.execute { runCatching(block).onFailure { android.util.Log.w("RoutineAlarm", "Routine request not confirmed", it) } }
+    }
+    private data class AdmissionScope(val signature: String, val ticket: Long)
+    private val admitted = ThreadLocal<AdmissionScope?>()
+    /** One callback-scoped permission, invalidated by every existing repository write. Not saved authority. */
+    internal fun requestDeliveryAdmission(context: Context, original: Intent?, accept: () -> Unit, reject: () -> Unit) {
+        val intent = original?.let(::Intent)
+        if (intent == null) { reject(); return }
+        val originalGeneration = if (intent.hasExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION))
+            intent.getStringExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION) else BEFORE_FIRST_RESTORE
+        // A known stale generation cannot gain authority by waiting for a later read.
+        if (originalGeneration != restoreGeneration(context) ||
+            (intent.getBooleanExtra(AlarmScheduler.EXTRA_RECURRING, false) && !isEnabled(context))) {
+            reject(); return
+        }
+        if (!intent.getBooleanExtra(AlarmScheduler.EXTRA_RECURRING, false)) {
+            if (isDeliveryAllowed(context, intent)) accept() else reject()
+            return
+        }
+        if (isDeliveryAllowedInScope(intent)) { accept(); return }
+        val generation = restoreGeneration(context)
+        val weeklyRevision = state(context).sequence.get()
+        val ticket = com.cztr.routinealarm.occurrence.TestOutputAdmission.ticket()
+        dispatchStorage {
+            val allowed = ticket != null && runCatching { isDeliveryAllowed(context, intent) }.getOrDefault(false)
+            Handler(Looper.getMainLooper()).post {
+                var performed = false
+                if (allowed && generation == restoreGeneration(context) && weeklyRevision == state(context).sequence.get() && isEnabled(context)) {
+                    performed = com.cztr.routinealarm.occurrence.TestOutputAdmission.admit(ticket!!) {
+                        val previous = admitted.get()
+                        admitted.set(AdmissionScope(intent.toUri(0), ticket))
+                        try { accept() } finally { admitted.set(previous) }
+                    }
+                }
+                if (!performed) reject()
+            }
+        }
+    }
+    private fun isDeliveryAllowedInScope(intent: Intent): Boolean = admitted.get()?.let {
+        it.signature == intent.toUri(0) && com.cztr.routinealarm.occurrence.TestOutputAdmission.ticket() == it.ticket
+    } == true
 
     internal fun restoreGeneration(context: Context): String =
         preferences(context).getString(KEY_RESTORE_GENERATION, BEFORE_FIRST_RESTORE) ?: BEFORE_FIRST_RESTORE
@@ -48,7 +98,19 @@ object ScheduleState {
         if (generation != restoreGeneration(context)) return false
         if (!intent.getBooleanExtra(AlarmScheduler.EXTRA_RECURRING, false)) return true
         val id = intent.getStringExtra(AlarmScheduler.EXTRA_EVENT_ID) ?: return false
-        return isEnabled(context) && ScheduleRegistry.scheduledById(id)?.enabled == true
+        if (!isEnabled(context)) return false
+        if (Looper.myLooper() == Looper.getMainLooper()) return isDeliveryAllowedInScope(intent)
+        val snapshot = runCatching { ScheduleRegistry.load(context) }.getOrNull() ?: return false
+        val event = snapshot.scheduledById(id)?.takeIf { it.enabled } ?: return false
+        val definition = snapshot.definitions[id]
+        if (definition?.quarantined == true) return false
+        if (definition != null || snapshot.restoreEpoch.isNotEmpty() ||
+            intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_VERSION) || intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_EPOCH)) {
+            if (!intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_VERSION) ||
+                intent.getLongExtra(AlarmScheduler.EXTRA_ROUTINE_VERSION, -1) != (definition?.version ?: 0L) ||
+                intent.getStringExtra(AlarmScheduler.EXTRA_ROUTINE_EPOCH) != snapshot.restoreEpoch) return false
+        }
+        return event.enabled
     }
 
     fun isEnabled(context: Context): Boolean {

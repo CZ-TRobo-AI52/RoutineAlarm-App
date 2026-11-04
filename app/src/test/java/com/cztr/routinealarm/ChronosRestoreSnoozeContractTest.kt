@@ -67,7 +67,7 @@ class ChronosRestoreSnoozeContractTest {
     @Test fun oldOneShotSnoozeMustNotStartOutputAfterRestore() {
         val delivery = oldSnoozeDelivery()
         finishRestore()
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNull("Pre-restore one-shot delivery must require renewed authority",
             shadowOf(context).nextStartedService)
     }
@@ -75,7 +75,7 @@ class ChronosRestoreSnoozeContractTest {
     @Test fun normalWeeklyPausePreservesAlreadyRequestedOneShotSnooze() {
         val delivery = oldSnoozeDelivery()
         ScheduleState.setEnabled(context, false)
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         val service = requireNotNull(shadowOf(context).nextStartedService)
         assertEquals(AlarmService::class.java.name, service.component?.className)
         assertEquals("Synthetic speech", service.getStringExtra(AlarmScheduler.EXTRA_SPOKEN_TEXT))
@@ -84,9 +84,9 @@ class ChronosRestoreSnoozeContractTest {
     @Test fun recurringDeliveryRemainsRejectedAfterRestore() {
         val event = ScheduleRegistry.enabledEvents.first()
         finishRestore()
-        AlarmReceiver().onReceive(context, Intent(context, AlarmReceiver::class.java)
+        run { AlarmReceiver().onReceive(context, Intent(context, AlarmReceiver::class.java)
             .putExtra(AlarmScheduler.EXTRA_RECURRING, true)
-            .putExtra(AlarmScheduler.EXTRA_EVENT_ID, event.id))
+            .putExtra(AlarmScheduler.EXTRA_EVENT_ID, event.id)); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNull(shadowOf(context).nextStartedService)
         assertTrue(shadowOf(manager).scheduledAlarms.isEmpty())
     }
@@ -95,7 +95,7 @@ class ChronosRestoreSnoozeContractTest {
         val delivery = oldSnoozeDelivery()
         finishRestore()
         ScheduleState.setEnabled(context, true)
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNull(shadowOf(context).nextStartedService)
     }
 
@@ -103,7 +103,7 @@ class ChronosRestoreSnoozeContractTest {
         finishRestore()
         val delivery = oldSnoozeDelivery()
         finishRestore()
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNull(shadowOf(context).nextStartedService)
     }
 
@@ -111,10 +111,10 @@ class ChronosRestoreSnoozeContractTest {
         val delivery = Intent(context, AlarmReceiver::class.java)
             .putExtra(AlarmScheduler.EXTRA_RECURRING, false)
             .putExtra(AlarmScheduler.EXTRA_TITLE, "Legacy request")
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNotNull(shadowOf(context).nextStartedService)
         finishRestore()
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNull(shadowOf(context).nextStartedService)
     }
 }

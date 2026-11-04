@@ -88,8 +88,8 @@ class OsRestoreAdmissionTest {
     @Test fun restoredWeeklyPreferenceCannotRearmAtBootOrDispatchStaleRecurringIntent() {
         restoredEnabledPreference()
         agent().onRestoreFinished()
-        BootReceiver().onReceive(context, Intent(Intent.ACTION_BOOT_COMPLETED))
-        AlarmReceiver().onReceive(context, recurringIntent())
+        run { BootReceiver().onReceive(context, Intent(Intent.ACTION_BOOT_COMPLETED)); com.cztr.routinealarm.support.drainRoutineAdmissions() }
+        run { AlarmReceiver().onReceive(context, recurringIntent()); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(shadowOf(manager).scheduledAlarms.isEmpty())
         assertNull(shadowOf(context).nextStartedService)
     }
@@ -97,7 +97,7 @@ class OsRestoreAdmissionTest {
     @Test fun ordinaryAgentCreationAndSameDeviceUpgradeKeepExistingEnablement() {
         restoredEnabledPreference()
         agent().onDestroy() // Backup/agent initialization is not a restore-completion event.
-        BootReceiver().onReceive(context, Intent(Intent.ACTION_MY_PACKAGE_REPLACED))
+        run { BootReceiver().onReceive(context, Intent(Intent.ACTION_MY_PACKAGE_REPLACED)); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(ScheduleState.isEnabled(context))
         assertTrue(shadowOf(manager).scheduledAlarms.isNotEmpty())
     }
@@ -108,15 +108,15 @@ class OsRestoreAdmissionTest {
         assertFalse(ScheduleState.isEnabled(context))
         ScheduleState.setEnabled(context, true)
         // Re-enabling does not renew a pre-restore delivery. A fresh registration does.
-        AlarmReceiver().onReceive(context, recurringIntent())
+        run { AlarmReceiver().onReceive(context, recurringIntent()); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNull(shadowOf(context).nextStartedService)
         val event = PersonalSchedule.allEvents.first { it.enabled }
-        assertTrue(AlarmScheduler.scheduleEvent(context, event))
+        assertTrue(com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleEvent(context, event) })
         val pending = requireNotNull(shadowOf(manager).scheduledAlarms.single().operation)
         val freshDelivery = Intent(shadowOf(pending).savedIntent)
         manager.cancel(pending)
         assertTrue(shadowOf(manager).scheduledAlarms.isEmpty())
-        AlarmReceiver().onReceive(context, freshDelivery)
+        run { AlarmReceiver().onReceive(context, freshDelivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNotNull(shadowOf(context).nextStartedService)
         assertTrue(shadowOf(manager).scheduledAlarms.isNotEmpty())
     }

@@ -75,7 +75,7 @@ class LegacyRecurringAdmissionTest {
     @Test fun lookupOnlyCuesCannotBeScheduledOrAcquireNewTokens() {
         assertTrue(cues.isNotEmpty())
         cues.forEach {
-            assertFalse("Cue ${it.id} is owned by the training session", AlarmScheduler.scheduleEvent(context, it))
+            assertFalse("Cue ${it.id} is owned by the training session", com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleEvent(context, it) })
             assertNull(existing(it))
         }
         assertTrue(alarms.isEmpty())
@@ -85,7 +85,7 @@ class LegacyRecurringAdmissionTest {
         val old = historical(cue)
         val delivery = Intent(shadowOf(old).savedIntent)
         manager.cancel(old) // The OS consumed the one-shot registration.
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(alarms.isEmpty())
         assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
         old.cancel()
@@ -95,7 +95,7 @@ class LegacyRecurringAdmissionTest {
         listOf(current.copy(id = "unknown-old-event"), disabled.copy(enabled = true),
             current.copy(title = "Changed outside catalog"),
             current.copy(minute = (current.minute + 1) % 60)).forEach {
-            assertFalse(AlarmScheduler.scheduleEvent(context, it))
+            assertFalse(com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleEvent(context, it) })
         }
         assertTrue(alarms.isEmpty())
     }
@@ -103,10 +103,10 @@ class LegacyRecurringAdmissionTest {
     @Test fun cancelAllRemovesKnownCuesDisabledEntriesAndCurrentPlansWithoutCreatingTokens() {
         val events = listOf(current, TrainingSessionPlan.startEvents.first(), cue, disabled)
         events.forEach(::historical)
-        AlarmScheduler.cancelAll(context)
+        com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.cancelAll(context) }
         assertTrue(alarms.isEmpty())
         events.forEach { assertNull("Old token ${it.id} survived", existing(it)) }
-        AlarmScheduler.cancelAll(context)
+        com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.cancelAll(context) }
         ScheduleRegistry.allEvents.forEach { assertNull(existing(it)) }
     }
 
@@ -114,7 +114,7 @@ class LegacyRecurringAdmissionTest {
         historical(cue); historical(disabled)
         val valid = historical(current)
         repeat(2) {
-            assertEquals(ScheduleRegistry.enabledEvents.size, AlarmScheduler.scheduleAll(context))
+            assertEquals(ScheduleRegistry.enabledEvents.size, com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleAll(context) })
             assertNull(existing(cue)); assertNull(existing(disabled))
             assertEquals(valid, existing(current))
             val ids = alarms.map { shadowOf(requireNotNull(it.operation)).savedIntent
@@ -129,7 +129,7 @@ class LegacyRecurringAdmissionTest {
         val valid = historical(current)
         val priorTime = alarms.single { it.operation == valid }.triggerAtTime
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
-        assertEquals(0, AlarmScheduler.scheduleAll(context))
+        assertEquals(0, com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleAll(context) })
         assertNull(existing(cue)); assertNull(existing(disabled))
         assertEquals(valid, alarms.single().operation)
         assertEquals(priorTime, alarms.single().triggerAtTime)
@@ -137,7 +137,7 @@ class LegacyRecurringAdmissionTest {
 
     @Test @Config(sdk = [31]) fun alreadyDeliveredValidAlarmStillDispatchesWhenNextSchedulingIsDenied() {
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
-        AlarmReceiver().onReceive(context, intent(current))
+        run { AlarmReceiver().onReceive(context, intent(current)); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(alarms.isEmpty())
         val service = shadowOf(RuntimeEnvironment.getApplication()).nextStartedService
         assertEquals(AlarmService::class.java.name, service!!.component!!.className)
@@ -151,7 +151,7 @@ class LegacyRecurringAdmissionTest {
         val independent = alarms.map { requireNotNull(it.operation) }.toSet()
         assertEquals(2, independent.size)
         historical(cue); historical(current)
-        AlarmScheduler.cancelAll(context)
+        com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.cancelAll(context) }
         assertEquals(independent, alarms.map { it.operation }.toSet())
     }
 
@@ -161,7 +161,7 @@ class LegacyRecurringAdmissionTest {
         val delivery = Intent(shadowOf(pending).savedIntent)
         manager.cancel(pending)
         ScheduleState.setEnabled(context, false)
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(alarms.isEmpty())
         val service = shadowOf(RuntimeEnvironment.getApplication()).nextStartedService!!
         assertEquals("Speak control", service.getStringExtra(AlarmScheduler.EXTRA_SPOKEN_TEXT))
@@ -173,7 +173,7 @@ class LegacyRecurringAdmissionTest {
         historical(cue); historical(disabled)
         ScheduleState.setEnabled(context, false)
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
-        BootReceiver().onReceive(context, Intent(Intent.ACTION_MY_PACKAGE_REPLACED))
+        run { BootReceiver().onReceive(context, Intent(Intent.ACTION_MY_PACKAGE_REPLACED)); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertNull(existing(cue)); assertNull(existing(disabled))
         assertTrue(alarms.isEmpty())
         assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
@@ -186,7 +186,7 @@ class LegacyRecurringAdmissionTest {
         historical(otherCue)
         val fault = Shadow.extract<FailingLegacyAlarmManagerShadow>(manager)
         fault.failing = failed
-        assertEquals(ScheduleRegistry.enabledEvents.size, AlarmScheduler.scheduleAll(context))
+        assertEquals(ScheduleRegistry.enabledEvents.size, com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleAll(context) })
         assertEquals(1, fault.failures)
         assertEquals(failed, existing(cue))
         assertTrue(alarms.any { it.operation == failed })
@@ -201,7 +201,7 @@ class LegacyRecurringAdmissionTest {
         val fault = Shadow.extract<FailingLegacyAlarmManagerShadow>(manager)
         fault.failing = failed
         ScheduleState.setEnabled(context, false)
-        BootReceiver().onReceive(context, Intent(Intent.ACTION_MY_PACKAGE_REPLACED))
+        run { BootReceiver().onReceive(context, Intent(Intent.ACTION_MY_PACKAGE_REPLACED)); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertEquals(1, fault.failures)
         assertNotNull(context.getSystemService(JobScheduler::class.java)
             .getPendingJob(TestAlarmRecoveryService.JOB_ID))
@@ -211,7 +211,7 @@ class LegacyRecurringAdmissionTest {
 
     @Test fun unrelatedBroadcastDoesNotCancelLegacyRegistrations() {
         val old = historical(cue)
-        BootReceiver().onReceive(context, Intent("unrelated.action"))
+        run { BootReceiver().onReceive(context, Intent("unrelated.action")); com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertEquals(old, alarms.single().operation)
     }
 }

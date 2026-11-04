@@ -178,7 +178,7 @@ class StaleAlarmRecoveryTest {
     }
 
     @Test fun staleTestCleanupLeavesRealWeeklyAlarmIdentityUntouched() {
-        assertTrue(AlarmScheduler.scheduleEvent(context, ScheduleRegistry.enabledEvents.first()))
+        assertTrue(com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleEvent(context, ScheduleRegistry.enabledEvents.first()) })
         val weekly = shadowOf(manager).scheduledAlarms.single().operation
         staleAfterCheck(create(), ActionType.DONE)
         assertEquals(2, shadowOf(manager).scheduledAlarms.size)

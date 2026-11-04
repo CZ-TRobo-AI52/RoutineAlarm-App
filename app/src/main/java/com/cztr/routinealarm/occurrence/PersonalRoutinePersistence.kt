@@ -10,6 +10,7 @@ import org.json.JSONObject
 /** Definition data only. Saving never grants activation or invokes a device effect. */
 data class PersonalRoutineRecord(val event: RoutineEvent, val version: Long, val planVersion: Long,
     val restoreEpoch: String, val quarantined: Boolean)
+data class PersonalRoutineCatalog(val definitions: List<PersonalRoutineRecord>, val restoreEpoch: String)
 data class PersonalRoutineSaveRequest(val stableRequestId: String, val event: RoutineEvent,
     val expectedVersion: Long, val expectedPlanVersion: Long, val expectedRestoreEpoch: String)
 sealed class PersonalRoutineSaveResult {

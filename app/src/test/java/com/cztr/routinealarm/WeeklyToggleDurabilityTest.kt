@@ -72,7 +72,7 @@ class WeeklyToggleDurabilityTest {
     private fun drain() {
         worker()?.submit {}?.get(10, TimeUnit.SECONDS)
         ReflectionHelpers.callStaticMethod<Void>(Class.forName("android.app.QueuedWork"), "waitToFinish")
-        shadowOf(Looper.getMainLooper()).idle()
+        shadowOf(Looper.getMainLooper()).idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
     }
     private fun views(v: View): List<View> = listOf(v) + if (v is ViewGroup)
         (0 until v.childCount).flatMap { views(v.getChildAt(it)) } else emptyList()
@@ -245,10 +245,10 @@ class WeeklyToggleDurabilityTest {
         withMain { c ->
             ScheduleState.setEnabled(app, true); c.pause().resume(); openPlan(c.get())
             toggle(c.get()).isChecked = false; drain()
-            assertTrue(ScheduleState.isDeliveryAllowed(app, delivery))
+            assertTrue(com.cztr.routinealarm.support.onRoutineStorage { ScheduleState.isDeliveryAllowed(app, delivery) })
             assertTrue(shadowOf(manager).scheduledAlarms.any { it.operation == pending })
             ScheduleState.disableAfterRestore(app)
-            assertFalse(ScheduleState.isDeliveryAllowed(app, delivery))
+            assertFalse(com.cztr.routinealarm.support.onRoutineStorage { ScheduleState.isDeliveryAllowed(app, delivery) })
         }
     }
     private fun rotatedWrite(enabled: Boolean, failure: Boolean) {

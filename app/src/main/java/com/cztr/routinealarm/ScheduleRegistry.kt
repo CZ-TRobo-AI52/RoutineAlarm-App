@@ -1,5 +1,11 @@
 package com.cztr.routinealarm
 
+import android.content.Context
+import com.cztr.routinealarm.occurrence.PersonalRoutineRecord
+import com.cztr.routinealarm.occurrence.SqliteOccurrenceRepository
+import java.time.Clock
+import java.util.Collections
+
 object ScheduleRegistry {
 
     /*
@@ -49,6 +55,23 @@ object ScheduleRegistry {
         return java.util.Collections.unmodifiableList(
             PersonalSchedule.allEvents.map { overrides[it.id] ?: it } +
                 definitions.filter { saved -> PersonalSchedule.allEvents.none { it.id == saved.id } })
+    }
+
+    /** A fresh, immutable DB snapshot. Static properties above remain legacy lookup compatibility only. */
+    data class Snapshot(val allEvents: List<RoutineEvent>, val scheduledEvents: List<RoutineEvent>,
+        val definitions: Map<String, PersonalRoutineRecord>, val restoreEpoch: String) {
+        fun scheduledById(id: String): RoutineEvent? = scheduledEvents.firstOrNull { it.id == id }
+    }
+
+    fun load(context: Context): Snapshot = ScheduleState.readRoutineStorage {
+        SqliteOccurrenceRepository(context.applicationContext, Clock.systemDefaultZone()).use { repository ->
+            val catalog = repository.personalRoutineCatalog()
+            val records = catalog.definitions
+            val personal = personalEvents(records.map { it.event.copy(enabled = false) })
+            Snapshot(Collections.unmodifiableList(personal + TrainingSchedule.allEvents),
+                Collections.unmodifiableList(personal + TrainingSessionPlan.startEvents),
+                Collections.unmodifiableMap(records.associateBy { it.event.id }), catalog.restoreEpoch)
+        }
     }
 
     val enabledEvents: List<RoutineEvent>

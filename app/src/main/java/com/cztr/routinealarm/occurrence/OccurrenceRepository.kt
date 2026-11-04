@@ -64,7 +64,8 @@ class SqliteOccurrenceRepository(
     name: String = "occurrences.db",
     private val beforeCommit: () -> Unit = {},
 ) : OccurrenceRepository {
-    private val helper = OccurrenceDatabase(context.applicationContext, name)
+    private val database = OccurrenceDatabaseLeases.acquire(context.applicationContext, name)
+    private val helper get() = database.helper
 
     /** Capture execution data and plan lineage in one snapshot; provider I/O is outside it. */
     fun exportBackup(): ByteArray {
@@ -103,6 +104,10 @@ class SqliteOccurrenceRepository(
         readSnapshot { PersonalPlanPersistence.read(it, scope.eventId) }
 
     /** Worker-thread snapshot APIs. No activation or scheduling side effects. */
+    fun personalRoutineCatalog(): PersonalRoutineCatalog = readSnapshot { db ->
+        PersonalRoutineCatalog(java.util.Collections.unmodifiableList(PersonalRoutinePersistence.list(db)),
+            PersonalRoutinePersistence.epoch(db))
+    }
     fun listPersonalRoutines(): List<PersonalRoutineRecord> = readSnapshot { PersonalRoutinePersistence.list(it) }
     fun readPersonalRoutine(eventId: String): PersonalRoutineRecord? =
         readSnapshot { PersonalRoutinePersistence.read(it, eventId) }
@@ -585,7 +590,7 @@ class SqliteOccurrenceRepository(
     private fun receipt(cursor: Cursor) = SchedulingReceipt(SchedulingOutcome.valueOf(cursor.string("outcome")),
         SchedulingReason.valueOf(cursor.string("reason")), Instant.parse(cursor.string("recorded_at_exact")))
 
-    override fun close() = helper.close()
+    override fun close() = database.close()
 
     /** Keep related SELECTs on one connection and snapshot; never invoke the mutation hook. */
     private fun <T> readSnapshot(block: (SQLiteDatabase) -> T): T {
@@ -697,6 +702,38 @@ class SqliteOccurrenceRepository(
             put("result_snapshot", OccurrenceCodec.encode(occurrence))
             put("result_reason", result.reason)
         })
+    }
+}
+
+/** One existing helper owns initialization for each database file. Leases contain no data authority. */
+private object OccurrenceDatabaseLeases {
+    private class Entry(val helper: OccurrenceDatabase, var references: Int = 0)
+    private val entries = mutableMapOf<String, Entry>()
+
+    class Lease(private val value: OccurrenceDatabase, private val release: () -> Unit) : Closeable {
+        private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+        val helper: OccurrenceDatabase get() {
+            check(!closed.get()) { "Occurrence repository is closed" }
+            return value
+        }
+        override fun close() { if (closed.compareAndSet(false, true)) release() }
+    }
+
+    fun acquire(context: Context, name: String): Lease {
+        val path = context.getDatabasePath(name).canonicalPath
+        return synchronized(entries) {
+            val entry = entries.getOrPut(path) { Entry(OccurrenceDatabase(context, name)) }
+            entry.references++
+            Lease(entry.helper) {
+                synchronized(entries) {
+                    check(entries[path] === entry)
+                    entry.references--
+                    if (entry.references == 0) {
+                        try { entry.helper.close() } finally { entries.remove(path) }
+                    }
+                }
+            }
+        }
     }
 }
 

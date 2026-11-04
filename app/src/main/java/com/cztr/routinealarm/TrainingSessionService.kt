@@ -112,6 +112,9 @@ class TrainingSessionService :
         List<RoutineEvent> =
         emptyList()
 
+    private var admissionSequence = 0L
+    private var activeAdmissionSequence = 0L
+    private var pendingAdmissionSequence: Long? = null
     private var currentAdmission: Intent? = null
 
     @Volatile private var sessionId:
@@ -167,11 +170,25 @@ class TrainingSessionService :
             return START_NOT_STICKY
         }
 
-        if (!ScheduleState.isDeliveryAllowed(this, intent)) {
-            if (sessionId == null || !ScheduleState.isDeliveryAllowed(this, currentAdmission)) stopSession()
-            return START_NOT_STICKY
-        }
-        currentAdmission = Intent(intent!!)
+        val incoming = intent?.let(::Intent) ?: return START_NOT_STICKY
+        val request = ++admissionSequence
+        pendingAdmissionSequence = request
+        if (sessionId == null) startForegroundCompat(createNotification("Training"))
+        ScheduleState.requestDeliveryAdmission(this, incoming, {
+            if (!destroyed && request == admissionSequence) acceptStart(incoming)
+        }, {
+            if (!destroyed && request == admissionSequence) {
+                pendingAdmissionSequence = null
+                if (sessionId == null) stopSession()
+            }
+        })
+        return START_NOT_STICKY
+    }
+
+    private fun acceptStart(intent: Intent) {
+        pendingAdmissionSequence = null
+        activeAdmissionSequence = admissionSequence
+        currentAdmission = Intent(intent)
 
         handler.removeCallbacksAndMessages(null)
         tts?.stop()
@@ -213,8 +230,8 @@ class TrainingSessionService :
             scheduleCues()
         }
 
-        return START_NOT_STICKY
     }
+
 
     override fun onInit(
         status: Int
@@ -287,7 +304,9 @@ class TrainingSessionService :
         }
     }
 
-    private fun scheduleCues() {
+    private fun scheduleCues() = withCurrentAdmission { scheduleCuesAdmitted() }
+
+    private fun scheduleCuesAdmitted() {
         if (!ensureCurrentAdmission()) return
         val scheduledSession = sessionId ?: return
         handler.removeCallbacksAndMessages(
@@ -369,7 +388,12 @@ class TrainingSessionService :
         )
     }
 
-    private fun announce(
+    private fun announce(event: RoutineEvent, scheduledSession: String) {
+        if (sessionId != scheduledSession || destroyed) return
+        withCurrentAdmission { announceAdmitted(event, scheduledSession) }
+    }
+
+    private fun announceAdmitted(
         event: RoutineEvent,
         scheduledSession: String
     ) {
@@ -393,6 +417,16 @@ class TrainingSessionService :
             null,
             utteranceId(scheduledSession, event)
         )
+    }
+
+    private fun withCurrentAdmission(output: () -> Unit) {
+        val original = currentAdmission?.let(::Intent) ?: return
+        val instance = sessionId ?: return
+        ScheduleState.requestDeliveryAdmission(this, original, {
+            if (!destroyed && sessionId == instance) output()
+        }, {
+            if (!destroyed && sessionId == instance) stopSession()
+        })
     }
 
     private fun ensureCurrentAdmission(): Boolean {
@@ -498,6 +532,9 @@ class TrainingSessionService :
     }
 
     private fun stopSession() {
+        val hasNewerPendingStart = (sessionId != null) &&
+            pendingAdmissionSequence?.let { it > activeAdmissionSequence } == true
+        if (!hasNewerPendingStart) { admissionSequence++; pendingAdmissionSequence = null }
         currentAdmission = null
         sessionId = null
         sessionEvents = emptyList()
@@ -508,14 +545,17 @@ class TrainingSessionService :
 
         tts?.stop()
 
-        stopForeground(
-            STOP_FOREGROUND_REMOVE
-        )
-
-        stopSelf()
+        // A targeted old stop retires only its active output, not a newer pending request.
+        if (!hasNewerPendingStart) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
+        pendingAdmissionSequence = null
+        admissionSequence++
+        destroyed = true
         if (live.get() === this) live.clear()
         currentAdmission = null
         destroyed = true

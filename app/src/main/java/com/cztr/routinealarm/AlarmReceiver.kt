@@ -11,6 +11,14 @@ class AlarmReceiver : BroadcastReceiver() {
         context: Context,
         intent: Intent
     ) {
+        val captured = Intent(intent)
+        val pending = goAsync()
+        ScheduleState.dispatchStorage {
+            try { receiveOnWorker(context.applicationContext, captured) } finally { pending?.finish() }
+        }
+    }
+
+    private fun receiveOnWorker(context: Context, intent: Intent) {
         if (!ScheduleState.isDeliveryAllowed(context, intent)) return
 
         val recurring =
@@ -29,9 +37,7 @@ class AlarmReceiver : BroadcastReceiver() {
                 recurring &&
                 !eventId.isNullOrBlank()
             ) {
-                ScheduleRegistry.scheduledById(
-                    eventId
-                )
+                runCatching { ScheduleRegistry.load(context).scheduledById(eventId) }.getOrNull()
             } else {
                 null
             }
@@ -101,6 +107,12 @@ class AlarmReceiver : BroadcastReceiver() {
             ).apply {
                 data = intent.data
                 putExtra(AlarmScheduler.EXTRA_RECURRING, recurring)
+                if (intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_VERSION)) {
+                    putExtra(AlarmScheduler.EXTRA_ROUTINE_VERSION, intent.getLongExtra(AlarmScheduler.EXTRA_ROUTINE_VERSION, -1))
+                }
+                if (intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_EPOCH)) {
+                    putExtra(AlarmScheduler.EXTRA_ROUTINE_EPOCH, intent.getStringExtra(AlarmScheduler.EXTRA_ROUTINE_EPOCH))
+                }
                 if (intent.hasExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION)) {
                     putExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION,
                         intent.getStringExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION))

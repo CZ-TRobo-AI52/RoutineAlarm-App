@@ -19,11 +19,16 @@ class AlarmActivity : Activity() {
     private var preparedSnooze: AlarmScheduler.PreparedSnooze? = null
     private var preparedSnoozeMinutes: Int? = null
     private var invalidSavedSnooze = false
+    private var admissionSequence = 0L
+    private var active = false
+    private var snoozePending = false
     private lateinit var originalAdmission: Intent
     private lateinit var title: String
     private lateinit var spokenText: String
 
     override fun onSaveInstanceState(outState: Bundle) {
+        invalidateAdmission()
+        outState.putParcelable(ORIGINAL_ADMISSION, Intent(originalAdmission))
         if (invalidSavedSnooze) outState.putBundle(PREPARED_SNOOZE, Bundle())
         preparedSnooze?.let { outState.putBundle(PREPARED_SNOOZE, it.toBundle()) }
         preparedSnoozeMinutes?.let { outState.putInt(PREPARED_SNOOZE_MINUTES, it) }
@@ -32,7 +37,9 @@ class AlarmActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        originalAdmission = Intent(intent)
+        @Suppress("DEPRECATION")
+        val restoredAdmission = savedInstanceState?.getParcelable<Intent>(ORIGINAL_ADMISSION)
+        originalAdmission = Intent(restoredAdmission ?: intent)
         if (savedInstanceState?.containsKey(PREPARED_SNOOZE) == true) {
             preparedSnooze = savedInstanceState.getBundle(PREPARED_SNOOZE)?.let {
                 AlarmScheduler.PreparedSnooze.fromBundle(it)
@@ -47,9 +54,52 @@ class AlarmActivity : Activity() {
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
         )
-        title = intent.getStringExtra(AlarmScheduler.EXTRA_TITLE) ?: "RoutineAlarm"
-        spokenText = intent.getStringExtra(AlarmScheduler.EXTRA_SPOKEN_TEXT) ?: title
-        renderAlarm()
+        title = originalAdmission.getStringExtra(AlarmScheduler.EXTRA_TITLE) ?: "RoutineAlarm"
+        spokenText = originalAdmission.getStringExtra(AlarmScheduler.EXTRA_SPOKEN_TEXT) ?: title
+        renderAlarm(false, checking = true)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        active = true
+        refreshAdmission()
+    }
+
+    override fun onPause() {
+        active = false
+        invalidateAdmission()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        active = false
+        invalidateAdmission()
+        super.onDestroy()
+    }
+
+    override fun finish() {
+        active = false
+        invalidateAdmission()
+        super.finish()
+    }
+
+    private fun invalidateAdmission() {
+        admissionSequence++
+        snoozePending = false
+    }
+
+    private fun isCurrent(request: Long) =
+        active && !isFinishing && !isDestroyed && admissionSequence == request
+
+    private fun refreshAdmission() {
+        val request = ++admissionSequence
+        renderAlarm(false, checking = !invalidSavedSnooze)
+        if (invalidSavedSnooze || !isCurrent(request)) return
+        ScheduleState.requestDeliveryAdmission(this, originalAdmission, {
+            if (isCurrent(request)) renderAlarm(true)
+        }, {
+            if (isCurrent(request)) renderAlarm(false)
+        })
     }
 
     @Deprecated("Platform back navigation")
@@ -57,15 +107,14 @@ class AlarmActivity : Activity() {
         handleAlarmUiAction(AlarmUiAction.CLOSE_SCREEN)
     }
 
-    private fun renderAlarm() {
+    private fun renderAlarm(deliveryAllowed: Boolean, checking: Boolean = false) {
         val theme = ThemePreferenceStore(this).read()
         val colors = AppNavigationState(theme = theme).colors(resources.configuration)
         val state = AlarmUiMapper.map(AlarmUiInput(
             title = title,
             spokenText = spokenText,
             now = LocalDateTime.now(),
-            deliveryAllowed = !invalidSavedSnooze &&
-                ScheduleState.isDeliveryAllowed(this, originalAdmission),
+            deliveryAllowed = !invalidSavedSnooze && deliveryAllowed,
             pendingSnoozeMinutes = preparedSnoozeMinutes,
             outputInstanceAvailable = originalAdmission
                 .getStringExtra(AlarmService.EXTRA_OUTPUT_INSTANCE)
@@ -76,10 +125,12 @@ class AlarmActivity : Activity() {
         @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility = if (colors == R52Colors.Light)
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR else 0
-        setContentView(AlarmScreenView(this, state, colors, ::handleAlarmUiAction))
+        val visibleState = if (checking) state.copy(warning = "Alarmberechtigung wird geprüft …") else state
+        setContentView(AlarmScreenView(this, visibleState, colors, ::handleAlarmUiAction))
     }
 
     private fun handleAlarmUiAction(action: AlarmUiAction) {
+        if (!active || isFinishing || isDestroyed) return
         when (action) {
             AlarmUiAction.CLOSE_SCREEN -> finish()
             AlarmUiAction.CLOSE_OUTPUT -> {
@@ -99,9 +150,30 @@ class AlarmActivity : Activity() {
     }
 
     private fun submitSnooze(minutes: Int) {
+        if (snoozePending || !active || isFinishing || isDestroyed) return
+        if (invalidSavedSnooze) { refreshAdmission(); return }
+        snoozePending = true
+        val request = ++admissionSequence
+        renderAlarm(false, checking = true)
+        // Display state is not authority: every explicit tap admits the original delivery again.
+        ScheduleState.requestDeliveryAdmission(this, originalAdmission, {
+            if (isCurrent(request) && snoozePending) {
+                snoozePending = false
+                submitAdmittedSnooze(minutes)
+            }
+        }, {
+            if (isCurrent(request) && snoozePending) {
+                snoozePending = false
+                Toast.makeText(this, "Diese Alarmausgabe ist nicht mehr aktuell.", Toast.LENGTH_LONG).show()
+                renderAlarm(false)
+            }
+        })
+    }
+
+    private fun submitAdmittedSnooze(minutes: Int) {
         if (invalidSavedSnooze || !ScheduleState.isDeliveryAllowed(this, originalAdmission)) {
             Toast.makeText(this, "Diese Alarmausgabe ist nicht mehr aktuell.", Toast.LENGTH_LONG).show()
-            renderAlarm()
+            refreshAdmission()
             return
         }
         val existingMinutes = preparedSnoozeMinutes
@@ -111,7 +183,7 @@ class AlarmActivity : Activity() {
                 "Vorherige Verschiebung unklar. Bitte $existingMinutes Minuten erneut versuchen.",
                 Toast.LENGTH_LONG,
             ).show()
-            renderAlarm()
+            refreshAdmission()
             return
         }
         val request = preparedSnooze ?: AlarmScheduler.prepareSnooze(
@@ -125,7 +197,7 @@ class AlarmActivity : Activity() {
             preparedSnoozeMinutes = minutes
         } ?: run {
             Toast.makeText(this, "Verschiebung nicht autorisiert.", Toast.LENGTH_LONG).show()
-            renderAlarm()
+            refreshAdmission()
             return
         }
         val result = runCatching { AlarmScheduler.submitSnooze(this, request) }
@@ -135,7 +207,7 @@ class AlarmActivity : Activity() {
                 "Planungswirkung unklar. Bitte dieselbe Dauer erneut versuchen.",
                 Toast.LENGTH_LONG,
             ).show()
-            renderAlarm()
+            refreshAdmission()
             return
         }
         if (!result.getOrDefault(false)) {
@@ -146,7 +218,7 @@ class AlarmActivity : Activity() {
                 "Die vorbereitete Verschiebung ist nicht mehr gültig. Aktuellen Zustand prüfen.",
                 Toast.LENGTH_LONG,
             ).show()
-            renderAlarm()
+            refreshAdmission()
             return
         }
         stopAlarm()
@@ -165,6 +237,7 @@ class AlarmActivity : Activity() {
     }
 
     companion object {
+        private const val ORIGINAL_ADMISSION = "original_alarm_admission"
         private const val PREPARED_SNOOZE = "prepared_snooze"
         private const val PREPARED_SNOOZE_MINUTES = "prepared_snooze_minutes"
     }

@@ -77,7 +77,7 @@ class Alpha13ServiceAuthorityContractTest {
             val event = ScheduleRegistry.enabledEvents.first {
                 !TrainingSessionPlan.isStartEvent(it.id) && (mode == null || it.mode == mode)
             }
-            assertTrue(AlarmScheduler.scheduleEvent(context, event))
+            assertTrue(com.cztr.routinealarm.support.onRoutineStorage { AlarmScheduler.scheduleEvent(context, event) })
         } else {
             AlarmScheduler.scheduleSnooze(context, "Synthetic final fence", "Synthetic final speech")
         }
@@ -93,7 +93,7 @@ class Alpha13ServiceAuthorityContractTest {
     }
 
     private fun receiverAdmits(delivery: Intent): Intent {
-        AlarmReceiver().onReceive(context, delivery)
+        run { AlarmReceiver().onReceive(context, delivery); com.cztr.routinealarm.support.onRoutineStorage { Unit } }
         val intent = requireNotNull(shadowOf(context).nextStartedService)
         assertEquals(AlarmService::class.java.name, intent.component?.className)
         return intent
@@ -107,7 +107,7 @@ class Alpha13ServiceAuthorityContractTest {
 
     private fun speechReady() {
         speech.onInitListener.onInit(TextToSpeech.SUCCESS)
-        shadowOf(Looper.getMainLooper()).idle()
+        shadowOf(Looper.getMainLooper()).idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
     }
 
     private fun restoreFinished() {
@@ -131,7 +131,7 @@ class Alpha13ServiceAuthorityContractTest {
         val admitted = receiverAdmits(capturedDelivery())
         restoreFinished()
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         speechReady()
         assertTrue("Service spoke a one-shot admitted before restore", speech.spoken.isEmpty())
         assertStoppedWithoutNotification()
@@ -140,7 +140,7 @@ class Alpha13ServiceAuthorityContractTest {
     @Test fun restoreAfterServiceStartBeforeTtsReadyMustBlockDeferredOutput() {
         val admitted = receiverAdmits(capturedDelivery())
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(speech.spoken.isEmpty())
         restoreFinished()
         speechReady()
@@ -152,7 +152,7 @@ class Alpha13ServiceAuthorityContractTest {
         val admitted = receiverAdmits(capturedDelivery(recurring = true))
         ScheduleState.setEnabled(context, false)
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         speechReady()
         assertTrue("Paused recurring delivery spoke after receiver/service race", speech.spoken.isEmpty())
         assertStoppedWithoutNotification()
@@ -162,7 +162,7 @@ class Alpha13ServiceAuthorityContractTest {
         val admitted = receiverAdmits(capturedDelivery())
         ScheduleState.setEnabled(context, false)
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         speechReady()
         assertEquals(listOf("Synthetic final speech"), speech.spoken)
     }
@@ -171,7 +171,7 @@ class Alpha13ServiceAuthorityContractTest {
         restoreFinished()
         val admitted = receiverAdmits(capturedDelivery())
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         speechReady()
         assertEquals(listOf("Synthetic final speech"), speech.spoken)
     }
@@ -179,12 +179,12 @@ class Alpha13ServiceAuthorityContractTest {
     @Test fun restoreMustStopNextRepeatEvenAfterWeeklyReenable() {
         val admitted = receiverAdmits(capturedDelivery())
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         speechReady()
         assertEquals(1, speech.spoken.size)
         restoreFinished()
         ScheduleState.setEnabled(context, true)
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(24))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(24)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertEquals("Restore must revoke the active repeat payload", 1, speech.spoken.size)
         assertTrue(shadowOf(service).isStoppedBySelf)
     }
@@ -194,10 +194,10 @@ class Alpha13ServiceAuthorityContractTest {
         restoreFinished()
         val fresh = receiverAdmits(capturedDelivery())
         createService()
-        service.onStartCommand(fresh, 0, 1)
+        service.onStartCommand(fresh, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         speechReady()
-        service.onStartCommand(stale, 0, 2)
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(8))
+        service.onStartCommand(stale, 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(8)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertEquals(listOf("Synthetic final speech", "Synthetic final speech"), speech.spoken)
         assertFalse(shadowOf(service).isStoppedBySelf)
     }
@@ -205,13 +205,13 @@ class Alpha13ServiceAuthorityContractTest {
     @Test fun stopBeforeSpeechReadyMustNotResurrectOutput() {
         val admitted = receiverAdmits(capturedDelivery())
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         val output = shadowOf(context.getSystemService(NotificationManager::class.java))
             .getNotification(AlarmService.NOTIFICATION_ID).fullScreenIntent
         val instance = shadowOf(output).savedIntent.getStringExtra(AlarmService.EXTRA_OUTPUT_INSTANCE)
         assertNotNull(instance)
         service.onStartCommand(Intent(context, AlarmService::class.java).setAction(AlarmService.ACTION_STOP)
-            .putExtra(AlarmService.EXTRA_OUTPUT_INSTANCE, instance), 0, 2)
+            .putExtra(AlarmService.EXTRA_OUTPUT_INSTANCE, instance), 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         speechReady()
         assertTrue(speech.spoken.isEmpty())
         assertTrue(shadowOf(service).isStoppedBySelf)
@@ -219,7 +219,7 @@ class Alpha13ServiceAuthorityContractTest {
 
     @Test fun nullRestartMustNotCreateDefaultOutput() {
         createService()
-        assertEquals(android.app.Service.START_NOT_STICKY, service.onStartCommand(null, 0, 1))
+        assertEquals(android.app.Service.START_NOT_STICKY, service.onStartCommand(null, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() })
         speechReady()
         assertTrue(speech.spoken.isEmpty())
     }
@@ -227,7 +227,7 @@ class Alpha13ServiceAuthorityContractTest {
     @Test fun weeklyPauseBeforeSpeechReadyMustBlockRecurringOutput() {
         val admitted = receiverAdmits(capturedDelivery(recurring = true))
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         ScheduleState.setEnabled(context, false)
         speechReady()
         assertTrue(speech.spoken.isEmpty())
@@ -236,12 +236,12 @@ class Alpha13ServiceAuthorityContractTest {
     @Test fun restoredRecurringAdmissionMustStayRevokedAfterReenableAndServiceRecreation() {
         val admitted = receiverAdmits(capturedDelivery(recurring = true))
         createService()
-        service.onStartCommand(admitted, 0, 1)
+        service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         controller!!.destroy()
         restoreFinished()
         ScheduleState.setEnabled(context, true)
         createService()
-        service.onStartCommand(admitted, 0, 2)
+        service.onStartCommand(admitted, 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         speechReady()
         assertTrue(speech.spoken.isEmpty())
         assertStoppedWithoutNotification()
@@ -251,24 +251,24 @@ class Alpha13ServiceAuthorityContractTest {
         val admitted = receiverAdmits(capturedDelivery(recurring = true, mode = EventMode.ANNOUNCEMENT))
         if (controller == null) {
             createService()
-            service.onStartCommand(admitted, 0, 1)
+            service.onStartCommand(admitted, 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             speechReady()
         } else {
-            service.onStartCommand(admitted, 0, 2)
-            shadowOf(Looper.getMainLooper()).idle()
+            service.onStartCommand(admitted, 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
+            shadowOf(Looper.getMainLooper()).idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         }
         return requireNotNull(speech.utteranceIds.last())
     }
 
     private fun startFreshSnoozeAfterRestore() {
         restoreFinished()
-        service.onStartCommand(receiverAdmits(capturedDelivery()), 0, 2)
-        shadowOf(Looper.getMainLooper()).idle()
+        service.onStartCommand(receiverAdmits(capturedDelivery()), 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
+        shadowOf(Looper.getMainLooper()).idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertEquals("Synthetic final speech", speech.spoken.last())
     }
 
     private fun assertCurrentOutputStillActive() {
-        shadowOf(Looper.getMainLooper()).idle()
+        shadowOf(Looper.getMainLooper()).idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertFalse("Historical TTS callback stopped the current payload", shadowOf(service).isStoppedBySelf)
         assertTrue(context.getSystemService(NotificationManager::class.java).activeNotifications
             .any { it.id == AlarmService.NOTIFICATION_ID })
@@ -280,7 +280,7 @@ class Alpha13ServiceAuthorityContractTest {
         speech.utteranceProgressListener.onDone(oldId)
         assertCurrentOutputStillActive()
         val before = speech.spoken.size
-        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(8))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(8)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertEquals(before + 1, speech.spoken.size)
     }
 
@@ -303,7 +303,7 @@ class Alpha13ServiceAuthorityContractTest {
         speech.utteranceProgressListener.onDone(oldId)
         // Do not drain the Handler between callback receipt and replacement admission.
         restoreFinished()
-        service.onStartCommand(receiverAdmits(capturedDelivery()), 0, 2)
+        service.onStartCommand(receiverAdmits(capturedDelivery()), 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertCurrentOutputStillActive()
     }
 
@@ -314,7 +314,7 @@ class Alpha13ServiceAuthorityContractTest {
         speech.utteranceProgressListener.onDone(oldId)
         assertCurrentOutputStillActive()
         speech.utteranceProgressListener.onDone(currentId)
-        shadowOf(Looper.getMainLooper()).idle()
+        shadowOf(Looper.getMainLooper()).idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertStoppedWithoutNotification()
     }
 
@@ -330,7 +330,7 @@ class Alpha13ServiceAuthorityContractTest {
         val id = startAnnouncement()
         if (error) speech.utteranceProgressListener.onError(id, TextToSpeech.ERROR)
         else speech.utteranceProgressListener.onDone(id)
-        shadowOf(Looper.getMainLooper()).idle()
+        shadowOf(Looper.getMainLooper()).idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertStoppedWithoutNotification()
     }
 
@@ -341,5 +341,17 @@ class Alpha13ServiceAuthorityContractTest {
         speech.utteranceProgressListener.onDone("announcement_once_unknown")
         speech.utteranceProgressListener.onError("announcement_once_unknown", TextToSpeech.ERROR)
         assertCurrentOutputStillActive()
+    }
+
+    @Test fun rejectedStartCannotKeepCompletedAnnouncementAlive() {
+        val current = startAnnouncement()
+        val stale = Intent(service, AlarmService::class.java)
+            .putExtra(AlarmScheduler.EXTRA_RECURRING, true)
+            .putExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION, "stale-generation")
+        service.onStartCommand(stale, 0, 2)
+        speech.utteranceProgressListener.onDone(current)
+        shadowOf(Looper.getMainLooper()).idle()
+        com.cztr.routinealarm.support.drainRoutineAdmissions()
+        assertStoppedWithoutNotification()
     }
 }

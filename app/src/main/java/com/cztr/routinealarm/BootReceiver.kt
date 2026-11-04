@@ -29,24 +29,19 @@ class BootReceiver :
                     false
             }
 
-        // Test alarms are explicitly requested and independent of the weekly toggle.
-        if (shouldRestore) {
-            TestAlarmRuntime.requestRecovery(context)
-            AlarmScheduler.cancelIneligibleEvents(context)
-        }
-
-        if (
-            shouldRestore &&
-            ScheduleState.isEnabled(
-                context
-            ) &&
-            AlarmScheduler.canScheduleExact(
-                context
-            )
-        ) {
-            AlarmScheduler.scheduleAll(
-                context
-            )
+        if (!shouldRestore) return
+        TestAlarmRuntime.requestRecovery(context) // Existing nonblocking test-recovery dispatch remains immediate.
+        val generation = ScheduleState.restoreGeneration(context)
+        val pending = goAsync()
+        ScheduleState.dispatchStorage {
+            try {
+                if (generation == ScheduleState.restoreGeneration(context)) {
+                    AlarmScheduler.cancelIneligibleEvents(context)
+                    if (ScheduleState.isEnabled(context) && AlarmScheduler.canScheduleExact(context)) {
+                        AlarmScheduler.scheduleAll(context)
+                    }
+                }
+            } finally { pending?.finish() }
         }
     }
 }

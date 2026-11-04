@@ -156,8 +156,8 @@ class LegacySnoozeRequestContractTest {
         val prepared = requireNotNull(AlarmScheduler.prepareSnooze(context, "Explicit", minutes = 5))
         ScheduleState.setEnabled(context, false)
         assertTrue(AlarmScheduler.submitSnooze(context, prepared))
-        assertTrue(ScheduleState.isDeliveryAllowed(context,
-            shadowOf(requireNotNull(shadowOf(manager).scheduledAlarms.single().operation)).savedIntent))
+        assertTrue(com.cztr.routinealarm.support.onRoutineStorage { ScheduleState.isDeliveryAllowed(context,
+            shadowOf(requireNotNull(shadowOf(manager).scheduledAlarms.single().operation)).savedIntent) })
     }
 
     @Test fun expiredSavedRequestCannotRearmAndInvalidDurationIsRejected() {

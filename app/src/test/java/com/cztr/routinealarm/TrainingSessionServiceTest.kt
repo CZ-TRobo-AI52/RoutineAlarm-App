@@ -105,7 +105,7 @@ class TrainingSessionServiceTest {
     private fun start(day: DayOfWeek) {
         assertEquals(Service.START_NOT_STICKY, service.onStartCommand(
             Intent(service, TrainingSessionService::class.java)
-                .putExtra("training_day", day.name), 0, 1))
+                .putExtra("training_day", day.name), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() })
     }
 
     private fun ready() {
@@ -115,7 +115,7 @@ class TrainingSessionServiceTest {
     private fun stopFromNotification() {
         val notification = requireNotNull(shadowOf(service).lastForegroundNotification)
         val stopIntent = Intent(shadowOf(notification.actions.single().actionIntent).savedIntent)
-        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(stopIntent, 0, 2))
+        assertEquals(Service.START_NOT_STICKY, service.onStartCommand(stopIntent, 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() })
     }
 
     private fun assertStopped() {
@@ -155,7 +155,7 @@ class TrainingSessionServiceTest {
         controller = null
         assertFalse(wakeLock.isHeld)
         assertTrue(speech.isShutdown)
-        main.idleFor(Duration.ofHours(12))
+        main.idleFor(Duration.ofHours(12)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(speech.requests.isEmpty())
     }
 
@@ -166,7 +166,7 @@ class TrainingSessionServiceTest {
         ready()
 
         assertStopped()
-        main.idleFor(Duration.ofHours(12))
+        main.idleFor(Duration.ofHours(12)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(speech.requests.isEmpty())
     }
 
@@ -193,7 +193,7 @@ class TrainingSessionServiceTest {
         ready()
 
         assertStopped()
-        main.idleFor(Duration.ofHours(12))
+        main.idleFor(Duration.ofHours(12)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue(speech.requests.isEmpty())
     }
 
@@ -207,7 +207,7 @@ class TrainingSessionServiceTest {
         stopFromNotification()
 
         assertStopped()
-        main.idleFor(Duration.ofHours(12))
+        main.idleFor(Duration.ofHours(12)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertEquals(before, speech.requests)
         controller!!.destroy()
         controller = null
@@ -228,7 +228,7 @@ class TrainingSessionServiceTest {
         assertFalse(wakeLock.isHeld)
         assertTrue(speech.isStopped)
         assertTrue(speech.isShutdown)
-        main.idleFor(Duration.ofHours(12))
+        main.idleFor(Duration.ofHours(12)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertEquals(before, speech.requests)
     }
 
@@ -239,7 +239,7 @@ class TrainingSessionServiceTest {
         assertStopped()
 
         ready()
-        main.idleFor(Duration.ofHours(12))
+        main.idleFor(Duration.ofHours(12)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
 
         assertTrue("Stopped session was spoken after delayed TTS initialization", speech.requests.isEmpty())
     }
@@ -269,7 +269,7 @@ class TrainingSessionServiceTest {
 
         start(DayOfWeek.MONDAY)
         speech.utteranceProgressListener.onDone(oldId)
-        main.idle()
+        main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
 
         assertFalse("Old utterance completion stopped the replacement session",
             shadowOf(service).isStoppedBySelf)
@@ -277,7 +277,7 @@ class TrainingSessionServiceTest {
         val currentId = requireNotNull(speech.requests.last().id)
         assertNotEquals(oldId, currentId)
         speech.utteranceProgressListener.onDone(currentId)
-        main.idle()
+        main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertStopped()
     }
     private val app get() = org.robolectric.RuntimeEnvironment.getApplication()
@@ -288,10 +288,10 @@ class TrainingSessionServiceTest {
             TrainingSessionPlan.isStartEvent(it.id) == training &&
                 (!training || it.daysOfWeek.contains(DayOfWeek.MONDAY))
         }
-        AlarmReceiver().onReceive(app, Intent(app, AlarmReceiver::class.java)
+        run { AlarmReceiver().onReceive(app, Intent(app, AlarmReceiver::class.java)
             .putExtra(AlarmScheduler.EXTRA_RECURRING, true)
             .putExtra(AlarmScheduler.EXTRA_EVENT_ID, event.id)
-            .putExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(app)))
+            .putExtra(AlarmScheduler.EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(app))); com.cztr.routinealarm.support.onRoutineStorage { Unit } }
         return requireNotNull(shadowOf(app).nextStartedService)
     }
     private fun awaitPauseWorker() {
@@ -317,20 +317,20 @@ class TrainingSessionServiceTest {
         assertNotNull(delivered.getStringExtra(AlarmScheduler.EXTRA_EVENT_ID))
     }
     @Test fun confirmedPauseStopsWeeklyTrainingAndPreservesConcurrentExplicitAlarm() {
-        create(); service.onStartCommand(weeklyDelivery(), 0, 1); ready(); main.runToNextTask()
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; ready(); main.runToNextTask()
         val weeklyBefore = speech.requests.toList(); val weeklyStops = speech.stopCalls
         val alarm = Robolectric.buildService(AlarmService::class.java).create()
         val explicit = alarmSpeech()
         try {
-            alarm.get().onStartCommand(alarmIntent("Explicit isolated output"), 0, 1)
-            explicit.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle()
+            alarm.get().onStartCommand(alarmIntent("Explicit isolated output"), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
+            explicit.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             val explicitStops = explicit.stopCalls
-            awaitPauseWorker(); main.idle()
+            awaitPauseWorker(); main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             assertTrue("P1_RED: confirmed pause left weekly training alive", shadowOf(service).isStoppedBySelf)
             assertTrue(speech.stopCalls > weeklyStops)
             assertEquals(explicitStops, explicit.stopCalls)
             assertFalse(shadowOf(alarm.get()).isStoppedBySelf)
-            main.idleFor(Duration.ofMinutes(5))
+            main.idleFor(Duration.ofMinutes(5)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             assertEquals(weeklyBefore, speech.requests)
             assertTrue(explicit.requests.size > 1)
         } finally { alarm.destroy() }
@@ -339,55 +339,55 @@ class TrainingSessionServiceTest {
         val alarm = Robolectric.buildService(AlarmService::class.java).create()
         val spoken = alarmSpeech()
         try {
-            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1)
-            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle()
+            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
+            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             val before = spoken.requests.toList(); val stops = spoken.stopCalls
-            awaitPauseWorker(); main.idle()
+            awaitPauseWorker(); main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             assertTrue("P1_RED: weekly alarm waits for repeat instead of stop", shadowOf(alarm.get()).isStoppedBySelf)
             assertTrue(spoken.stopCalls > stops)
-            main.idleFor(Duration.ofSeconds(30)); assertEquals(before, spoken.requests)
+            main.idleFor(Duration.ofSeconds(30)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; assertEquals(before, spoken.requests)
         } finally { alarm.destroy() }
     }
     @Test fun delayedWeeklyStopCannotStopExplicitTrainingReplacement() {
-        create(); service.onStartCommand(weeklyDelivery(), 0, 1); ready()
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; ready()
         awaitPauseWorker() // Pause acknowledged, but its main-thread stops are not drained.
         start(DayOfWeek.TUESDAY)
         val stops = speech.stopCalls
-        main.idle()
+        main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertFalse(shadowOf(service).isStoppedBySelf)
         assertEquals(stops, speech.stopCalls)
         main.runToNextTask(); assertTrue(speech.requests.isNotEmpty())
     }
     @Test fun delayedWeeklyStopCannotStopReenabledWeeklyTrainingReplacement() {
-        create(); service.onStartCommand(weeklyDelivery(), 0, 1); ready()
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; ready()
         awaitPauseWorker()
-        service.onStartCommand(weeklyDelivery(), 0, 2)
+        service.onStartCommand(weeklyDelivery(), 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         val stops = speech.stopCalls
-        main.idle(); assertFalse(shadowOf(service).isStoppedBySelf)
+        main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; assertFalse(shadowOf(service).isStoppedBySelf)
         assertEquals(stops, speech.stopCalls)
     }
     @Test fun confirmedPauseBeforeTrainingInitCannotResurrectCues() {
-        create(); service.onStartCommand(weeklyDelivery(), 0, 1)
-        awaitPauseWorker(); main.idle(); ready(); main.idleFor(Duration.ofHours(2))
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
+        awaitPauseWorker(); main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; ready(); main.idleFor(Duration.ofHours(2)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue("P1_RED: weekly training survived pause before TTS ready", shadowOf(service).isStoppedBySelf)
         assertTrue(speech.requests.isEmpty())
     }
     @Test fun restoreBeforeTrainingInitRevokesOriginalAdmission() {
-        create(); service.onStartCommand(weeklyDelivery(), 0, 1)
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         ScheduleState.disableAfterRestore(app); ready()
         assertTrue("P1_RED: training ignored original restore generation", shadowOf(service).isStoppedBySelf)
-        main.idleFor(Duration.ofHours(2)); assertTrue(speech.requests.isEmpty())
+        main.idleFor(Duration.ofHours(2)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; assertTrue(speech.requests.isEmpty())
     }
     @Test fun delayedWeeklyStopCannotStopExplicitAlarmReplacement() {
         val alarm = Robolectric.buildService(AlarmService::class.java).create()
         val spoken = alarmSpeech()
         try {
-            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1)
-            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle()
+            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
+            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             awaitPauseWorker()
-            alarm.get().onStartCommand(alarmIntent("Replacement explicit"), 0, 2)
+            alarm.get().onStartCommand(alarmIntent("Replacement explicit"), 0, 2).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             val stops = spoken.stopCalls
-            main.idle()
+            main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             assertFalse(shadowOf(alarm.get()).isStoppedBySelf)
             assertEquals(stops, spoken.stopCalls)
             assertEquals("Replacement explicit", spoken.requests.last().text)
@@ -409,30 +409,30 @@ class TrainingSessionServiceTest {
         val alarm = Robolectric.buildService(AlarmService::class.java).create()
         val spoken = alarmSpeech()
         try {
-            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1)
-            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle()
+            alarm.get().onStartCommand(weeklyDelivery(false), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
+            spoken.onInitListener.onInit(TextToSpeech.SUCCESS); main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             val instance = org.robolectric.util.ReflectionHelpers.getField<String>(alarm.get(), "activeOutputInstance")
             val before = spoken.requests.toList(); val stops = spoken.stopCalls
             awaitPauseAndEnableWithoutMainDrain()
             assertEquals(instance, org.robolectric.util.ReflectionHelpers.getField<String>(alarm.get(), "activeOutputInstance"))
-            main.idle()
+            main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
             assertTrue("V3_RED: re-enable revoked confirmed stop of same alarm instance",
                 shadowOf(alarm.get()).isStoppedBySelf)
             assertTrue(spoken.stopCalls > stops)
-            main.idleFor(Duration.ofSeconds(30)); assertEquals(before, spoken.requests)
+            main.idleFor(Duration.ofSeconds(30)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; assertEquals(before, spoken.requests)
         } finally { alarm.destroy() }
     }
     @Test fun confirmedPauseStillClosesOldWeeklyTrainingAfterEnable() {
-        create(); service.onStartCommand(weeklyDelivery(), 0, 1); ready(); main.runToNextTask()
+        create(); service.onStartCommand(weeklyDelivery(), 0, 1).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; ready(); main.runToNextTask()
         val session = org.robolectric.util.ReflectionHelpers.getField<String>(service, "sessionId")
         val before = speech.requests.toList(); val stops = speech.stopCalls
         awaitPauseAndEnableWithoutMainDrain()
         assertEquals(session, org.robolectric.util.ReflectionHelpers.getField<String>(service, "sessionId"))
-        main.idle()
+        main.idle().also { com.cztr.routinealarm.support.drainRoutineAdmissions() }
         assertTrue("V3_RED: re-enable revoked confirmed stop of same training session",
             shadowOf(service).isStoppedBySelf)
         assertTrue(speech.stopCalls > stops)
-        main.idleFor(Duration.ofMinutes(5)); assertEquals(before, speech.requests)
+        main.idleFor(Duration.ofMinutes(5)).also { com.cztr.routinealarm.support.drainRoutineAdmissions() }; assertEquals(before, speech.requests)
     }
 
 }

@@ -58,6 +58,10 @@ class AlarmService :
     private var tts: TextToSpeech? = null
     private var ttsReady = false
     private var hasPayload = false
+    private var admissionSequence = 0L
+    private var activeAdmissionSequence = 0L
+    private var pendingAdmissionSequence: Long? = null
+    private var destroyed = false
     private var currentAdmission: Intent? = null
     @Volatile private var activeOutputInstance: String? = null
     private var activeAnnouncementId: String? = null
@@ -83,16 +87,11 @@ class AlarmService :
     private val repeatRunnable =
         object : Runnable {
             override fun run() {
-                if (!speak(
-                    currentSpokenText,
-                    "routine_repeat_" +
-                        System.currentTimeMillis()
-                )) return
-
-                handler.postDelayed(
-                    this,
-                    8000
-                )
+                withCurrentAdmission {
+                    if (speak(currentSpokenText, "routine_repeat_" + System.currentTimeMillis())) {
+                        handler.postDelayed(this, 8000)
+                    }
+                }
             }
         }
 
@@ -141,13 +140,26 @@ class AlarmService :
             return START_NOT_STICKY
         }
 
-        if (!ScheduleState.isDeliveryAllowed(this, intent)) {
-            // An old second start must not cancel a different, still valid alarm.
-            if (!hasPayload || !ScheduleState.isDeliveryAllowed(this, currentAdmission)) stopAlarm()
-            return START_NOT_STICKY
-        }
+        val incoming = intent?.let(::Intent) ?: return START_NOT_STICKY
+        val request = ++admissionSequence
+        pendingAdmissionSequence = request
+        if (!hasPayload) startForegroundCompat(createNotification("RoutineAlarm", "Routine startet …", EventMode.ROUTINE))
+        ScheduleState.requestDeliveryAdmission(this, incoming, {
+            if (!destroyed && request == admissionSequence) acceptStart(incoming)
+        }, {
+            if (!destroyed && request == admissionSequence) {
+                pendingAdmissionSequence = null
+                if (!hasPayload) stopAlarm()
+            }
+        })
+        return START_NOT_STICKY
+    }
+
+    private fun acceptStart(intent: Intent) {
+        pendingAdmissionSequence = null
+        activeAdmissionSequence = admissionSequence
         activeAnnouncementId = null
-        currentAdmission = Intent(intent!!)
+        currentAdmission = Intent(intent)
         activeOutputInstance = UUID.randomUUID().toString()
 
         currentTitle =
@@ -191,8 +203,8 @@ class AlarmService :
             beginOutput()
         }
 
-        return START_NOT_STICKY
     }
+
 
     override fun onInit(
         status: Int
@@ -275,7 +287,9 @@ class AlarmService :
         }
     }
 
-    private fun beginOutput() {
+    private fun beginOutput() = withCurrentAdmission { beginOutputAdmitted() }
+
+    private fun beginOutputAdmitted() {
         if (!ensureCurrentAdmission()) return
         handler.removeCallbacks(
             repeatRunnable
@@ -314,6 +328,16 @@ class AlarmService :
             utteranceId
         )
         return true
+    }
+
+    private fun withCurrentAdmission(output: () -> Unit) {
+        val original = currentAdmission?.let(::Intent) ?: return
+        val instance = activeOutputInstance ?: return
+        ScheduleState.requestDeliveryAdmission(this, original, {
+            if (!destroyed && activeOutputInstance == instance) output()
+        }, {
+            if (!destroyed && activeOutputInstance == instance) stopAlarm()
+        })
     }
 
     private fun ensureCurrentAdmission(): Boolean {
@@ -498,6 +522,9 @@ class AlarmService :
     }
 
     private fun stopAlarm() {
+        val hasNewerPendingStart = (hasPayload) &&
+            pendingAdmissionSequence?.let { it > activeAdmissionSequence } == true
+        if (!hasNewerPendingStart) { admissionSequence++; pendingAdmissionSequence = null }
         hasPayload = false
         currentAdmission = null
         activeOutputInstance = null
@@ -508,14 +535,17 @@ class AlarmService :
 
         tts?.stop()
 
-        stopForeground(
-            STOP_FOREGROUND_REMOVE
-        )
-
-        stopSelf()
+        // A targeted old stop retires only its active output, not a newer pending request.
+        if (!hasNewerPendingStart) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
+        pendingAdmissionSequence = null
+        admissionSequence++
+        destroyed = true
         if (live.get() === this) live.clear()
         hasPayload = false
         currentAdmission = null

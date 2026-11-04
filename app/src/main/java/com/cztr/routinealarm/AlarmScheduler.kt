@@ -14,6 +14,8 @@ import java.util.concurrent.TimeUnit
 
 object AlarmScheduler {
 
+    const val EXTRA_ROUTINE_VERSION = "routine_definition_version"
+    const val EXTRA_ROUTINE_EPOCH = "routine_definition_epoch"
     const val EXTRA_EVENT_ID = "event_id"
     const val EXTRA_TITLE = "title"
     const val EXTRA_SPOKEN_TEXT = "spoken_text"
@@ -43,6 +45,13 @@ object AlarmScheduler {
     fun scheduleAll(
         context: Context
     ): Int {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            val generation = ScheduleState.restoreGeneration(context)
+            ScheduleState.dispatchStorage {
+                if (generation == ScheduleState.restoreGeneration(context) && ScheduleState.isEnabled(context)) scheduleAll(context)
+            }
+            return 0 // asynchronous request, never a fabricated scheduled-count receipt
+        }
         cancelIneligibleEvents(context)
         if (!canScheduleExact(context)) {
             return 0
@@ -50,12 +59,13 @@ object AlarmScheduler {
 
         var scheduled = 0
 
-        ScheduleRegistry.enabledEvents.forEach { event ->
+        val snapshot = runCatching { ScheduleRegistry.load(context) }.getOrElse {
+            Log.w("RoutineAlarm", "Gespeicherter Plan nicht lesbar; keine Planung", it)
+            return 0
+        }
+        snapshot.scheduledEvents.filter { it.enabled }.forEach { event ->
             if (
-                scheduleEvent(
-                    context,
-                    event
-                )
+                scheduleEventFromSnapshot(context, event, ZonedDateTime.now(), snapshot)
             ) {
                 scheduled++
             }
@@ -65,13 +75,16 @@ object AlarmScheduler {
     }
 
     fun cancelAll(context: Context) {
-        cancelEvents(context, ScheduleRegistry.allEvents)
+        val events = runCatching { ScheduleRegistry.load(context).allEvents }.getOrDefault(ScheduleRegistry.allEvents)
+        cancelEvents(context, events)
     }
 
     fun cancelIneligibleEvents(context: Context) {
-        cancelEvents(context, ScheduleRegistry.allEvents.filter {
-            ScheduleRegistry.scheduledById(it.id)?.enabled != true
-        })
+        val snapshot = runCatching { ScheduleRegistry.load(context) }.getOrNull()
+        // An unreadable database cannot authorize static defaults. Cleanup never creates a token.
+        cancelEvents(context, snapshot?.allEvents?.filter {
+            snapshot.scheduledById(it.id)?.enabled != true
+        } ?: ScheduleRegistry.allEvents)
     }
 
     private fun cancelEvents(context: Context, events: List<RoutineEvent>) {
@@ -101,9 +114,15 @@ object AlarmScheduler {
         now: ZonedDateTime =
             ZonedDateTime.now()
     ): Boolean {
+        val snapshot = runCatching { ScheduleRegistry.load(context) }.getOrNull() ?: return false
+        return scheduleEventFromSnapshot(context, event, now, snapshot)
+    }
+
+    private fun scheduleEventFromSnapshot(context: Context, event: RoutineEvent, now: ZonedDateTime,
+        snapshot: ScheduleRegistry.Snapshot): Boolean {
         if (
             !event.enabled ||
-            ScheduleRegistry.scheduledById(event.id) != event ||
+            snapshot.scheduledById(event.id) != event ||
             !canScheduleExact(context)
         ) {
             return false
@@ -125,7 +144,8 @@ object AlarmScheduler {
             next.toInstant().toEpochMilli(),
             eventPendingIntent(
                 context,
-                event
+                event,
+                snapshot
             )
         )
 
@@ -246,7 +266,8 @@ object AlarmScheduler {
 
     private fun eventPendingIntent(
         context: Context,
-        event: RoutineEvent
+        event: RoutineEvent,
+        snapshot: ScheduleRegistry.Snapshot
     ): PendingIntent {
         val intent =
             Intent(
@@ -254,6 +275,8 @@ object AlarmScheduler {
                 AlarmReceiver::class.java
             ).apply {
                 data = eventUri(event.id)
+                putExtra(EXTRA_ROUTINE_VERSION, snapshot.definitions[event.id]?.version ?: 0L)
+                putExtra(EXTRA_ROUTINE_EPOCH, snapshot.restoreEpoch)
 
                 putExtra(EXTRA_RESTORE_GENERATION, ScheduleState.restoreGeneration(context))
 
