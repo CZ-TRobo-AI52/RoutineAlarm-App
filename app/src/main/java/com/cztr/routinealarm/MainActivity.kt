@@ -285,6 +285,12 @@ class MainActivity : Activity() {
         }
         studioEditor?.let { editor ->
             (editor.parent as? ViewGroup)?.removeView(editor)
+            if (editor.saveDraftState().getString("status") == StudioSaveStatus.UNKNOWN_EFFECT.name) {
+                root.addView(secondaryButton("Speicherstatus prüfen").apply {
+                    tag = "studio_save_status_check"
+                    setOnClickListener { reconcileStudioSave(editor, this) }
+                })
+            }
             root.addView(editor)
             return
         }
@@ -319,22 +325,50 @@ class MainActivity : Activity() {
         val app = applicationContext
         studioIo.load({
             SqliteOccurrenceRepository(app, Clock.systemDefaultZone()).use { repository ->
-                val catalog = repository.personalRoutineCatalog()
-                if (eventId == null) StudioEditorDraft.create(0, catalog.restoreEpoch)
+                if (eventId == null) StudioEditorDraft.create(0, repository.deliveryEpoch())
                 else {
-                    val record = catalog.definitions.firstOrNull { it.event.id == eventId }
-                    check(record?.quarantined != true) { "Importierte Routine bleibt gesperrt." }
-                    val event = record?.event ?: PersonalSchedule.allEvents.firstOrNull { it.id == eventId }
-                    checkNotNull(event) { "Routine nicht mehr vorhanden." }
-                    // A legacy row has no captured plan authority. Version zero is conservative:
-                    // existing nonzero authority will conflict, never be refreshed at Save.
-                    StudioEditorDraft.edit(event, record?.version ?: 0, record?.planVersion ?: 0, catalog.restoreEpoch)
+                    val record = checkNotNull(repository.personalRoutineEditorSnapshot(eventId)) {
+                        "Routine nicht mehr vorhanden."
+                    }
+                    check(!record.quarantined) { "Importierte Routine bleibt gesperrt." }
+                    StudioEditorDraft.edit(record.event, record.version, record.planVersion, record.restoreEpoch)
                 }
             }
         }) { result ->
             if (session != studioSession || isFinishing || isDestroyed || navigation.destination != AppDestination.STUDIO) return@load
             result.fold(onSuccess = { createStudioEditor(it); render() },
                 onFailure = { Toast.makeText(this, "Routine konnte nicht geöffnet werden. Bitte neu laden.", Toast.LENGTH_LONG).show() })
+        }
+    }
+
+    /** Read the original receipt only. Missing replies never justify a new write or fresh fences. */
+    private fun reconcileStudioSave(editor: StudioEditorView, button: Button) {
+        val session = studioSession ?: return
+        val draft = editor.currentDraft()
+        if (studioEditor !== editor || studioSaveRequest != draft.requestId || draft.submittedPayload == null) return
+        val original = runCatching { PersonalRoutineSaveRequest(draft.requestId,
+            draft.event().copy(daysOfWeek = draft.days.toSet()), draft.expectedVersion,
+            draft.expectedPlanVersion, draft.expectedRestoreEpoch) }.getOrNull() ?: return
+        button.isEnabled = false
+        val app = applicationContext
+        studioIo.load({
+            SqliteOccurrenceRepository(app, Clock.systemDefaultZone()).use { it.personalRoutineSaveReceipt(original) }
+        }) { result ->
+            if (studioSession != session || studioSaveRequest != original.stableRequestId ||
+                studioEditor !== editor || isFinishing || isDestroyed || navigation.destination != AppDestination.STUDIO) return@load
+            button.isEnabled = true
+            result.fold(onSuccess = { receipt ->
+                if (receipt == null) editor.setSaveStatus(StudioSaveStatus.UNKNOWN_EFFECT,
+                    "Noch kein Speicherbeleg. Dein Entwurf bleibt erhalten. Bitte erneut prüfen.")
+                else {
+                    // Receipt acknowledges a historical request; the current definition is loaded afresh.
+                    studioSelectedId = original.event.id
+                    clearStudioEditor()
+                    Toast.makeText(this, "Frühere Speicheranfrage bestätigt. Aktueller Stand wird geladen.", Toast.LENGTH_SHORT).show()
+                    render()
+                }
+            }, onFailure = { editor.setSaveStatus(StudioSaveStatus.UNKNOWN_EFFECT,
+                "Speicherstatus konnte nicht gelesen werden. Dein Entwurf bleibt erhalten.") })
         }
     }
 
@@ -375,7 +409,7 @@ class MainActivity : Activity() {
                     }
                     is PersonalRoutineSaveResult.Conflict -> editor.setSaveStatus(StudioSaveStatus.CONFLICT)
                 }
-            }, onFailure = { editor.setSaveStatus(StudioSaveStatus.UNKNOWN_EFFECT) })
+            }, onFailure = { editor.setSaveStatus(StudioSaveStatus.UNKNOWN_EFFECT); render() })
         }
         if (!admitted) editor.setSaveStatus(StudioSaveStatus.ERROR)
     }

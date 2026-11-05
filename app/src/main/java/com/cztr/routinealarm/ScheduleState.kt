@@ -12,6 +12,13 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
+enum class PersonalRoutineEffect { NOT_ATTEMPTED, UNKNOWN_EFFECT }
+data class PersonalRoutineActivationResult(
+    val persistence: com.cztr.routinealarm.occurrence.PersonalRoutineSaveResult?,
+    val effect: PersonalRoutineEffect,
+    val reason: String
+)
+
 object ScheduleState {
     private const val PREFS = "routinealarm_schedule"
     private const val KEY_ENABLED = "weekly_schedule_enabled"
@@ -104,6 +111,10 @@ object ScheduleState {
         val event = snapshot.scheduledById(id)?.takeIf { it.enabled } ?: return false
         val definition = snapshot.definitions[id]
         if (definition?.quarantined == true) return false
+        if (definition != null || intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_PLAN_VERSION)) {
+            if (!intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_PLAN_VERSION) ||
+                intent.getLongExtra(AlarmScheduler.EXTRA_ROUTINE_PLAN_VERSION, -1L) != (definition?.planVersion ?: 0L)) return false
+        }
         if (definition != null || snapshot.restoreEpoch.isNotEmpty() ||
             intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_VERSION) || intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_EPOCH)) {
             if (!intent.hasExtra(AlarmScheduler.EXTRA_ROUTINE_VERSION) ||
@@ -193,6 +204,67 @@ object ScheduleState {
             }
         }
         publish(app)
+    }
+
+    /** Explicit user command only; never called by save, receipt lookup or recreation.
+     * The durable receipt and physical platform effect are deliberately separate.
+     */
+    fun requestPersonalRoutineEnabled(context: Context,
+        request: com.cztr.routinealarm.occurrence.PersonalRoutineActivationRequest,
+        reply: (PersonalRoutineActivationResult) -> Unit) {
+        val app = context.applicationContext
+        val frozen = runCatching { request.copy(event =
+            com.cztr.routinealarm.occurrence.PersonalRoutinePersistence.decode(
+                com.cztr.routinealarm.occurrence.PersonalRoutinePersistence.encode(request.event))) }
+        val generation = restoreGeneration(app)
+        val weeklyRevision = state(app).sequence.get()
+        dispatchStorage {
+            var persistence: com.cztr.routinealarm.occurrence.PersonalRoutineSaveResult? = null
+            var effect = PersonalRoutineEffect.NOT_ATTEMPTED
+            var reason = "REQUEST_UNCONFIRMED"
+            runCatching {
+                val original = frozen.getOrThrow()
+                if (generation != restoreGeneration(app)) {
+                    reason = "RESTORE_GENERATION"; return@runCatching
+                }
+                com.cztr.routinealarm.occurrence.SqliteOccurrenceRepository(app,
+                    java.time.Clock.systemDefaultZone()).use { repository ->
+                    persistence = repository.setPersonalRoutineEnabled(original)
+                    val saved = persistence as? com.cztr.routinealarm.occurrence.PersonalRoutineSaveResult.Saved
+                    if (saved == null) { reason = "CONFLICT"; return@use }
+                    if (saved.duplicate) { reason = "HISTORICAL_RECEIPT"; return@use }
+                    val ticket = com.cztr.routinealarm.occurrence.TestOutputAdmission.ticket()
+                    if (ticket == null) { reason = "STALE_AUTHORITY"; return@use }
+                    // One current SQLite snapshot, outside the admission monitor. Never refresh the request.
+                    val current = repository.personalRoutineEditorSnapshot(original.event.id)
+                    if (current == null || current.quarantined || current != saved.record) {
+                        reason = "STALE_AUTHORITY"; return@use
+                    }
+                    synchronized(transitionLock) {
+                        if (generation != restoreGeneration(app) || weeklyRevision != state(app).sequence.get()) {
+                            reason = "STALE_AUTHORITY"; return@synchronized
+                        }
+                        if (current.event.enabled && !isEnabled(app)) {
+                            reason = "WEEKLY_DISABLED"; return@synchronized
+                        }
+                        if (current.event.enabled && !AlarmScheduler.canScheduleExact(app)) {
+                            reason = "EXACT_PERMISSION_REQUIRED"; return@synchronized
+                        }
+                        if (!com.cztr.routinealarm.occurrence.TestOutputAdmission.admit(ticket) {
+                            // SDK return is not a physical scheduling/cancellation receipt.
+                            effect = PersonalRoutineEffect.UNKNOWN_EFFECT
+                            reason = "PLATFORM_EFFECT_UNCONFIRMED"
+                            AlarmScheduler.reconcilePersonalRoutineRegistration(app, current)
+                        }) reason = "STALE_AUTHORITY"
+                    }
+                }
+            }.onFailure {
+                reason = if (effect == PersonalRoutineEffect.UNKNOWN_EFFECT)
+                    "PLATFORM_EFFECT_UNCONFIRMED" else "REQUEST_UNCONFIRMED"
+            }
+            val result = PersonalRoutineActivationResult(persistence, effect, reason)
+            Handler(Looper.getMainLooper()).post { reply(result) }
+        }
     }
 
     /** Restore invalidates queued old-epoch commands as well as deliveries. */

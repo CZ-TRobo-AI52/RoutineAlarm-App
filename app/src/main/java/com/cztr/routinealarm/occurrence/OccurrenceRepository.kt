@@ -105,7 +105,9 @@ class SqliteOccurrenceRepository(
 
     /** Worker-thread snapshot APIs. No activation or scheduling side effects. */
     fun personalRoutineCatalog(): PersonalRoutineCatalog = readSnapshot { db ->
-        PersonalRoutineCatalog(java.util.Collections.unmodifiableList(PersonalRoutinePersistence.list(db)),
+        PersonalRoutineCatalog(java.util.Collections.unmodifiableList(PersonalRoutinePersistence.list(db).map {
+            it.copy(planVersion = PersonalPlanPersistence.read(db, it.event.id).version)
+        }),
             PersonalRoutinePersistence.epoch(db))
     }
     fun listPersonalRoutines(): List<PersonalRoutineRecord> = readSnapshot { PersonalRoutinePersistence.list(it) }

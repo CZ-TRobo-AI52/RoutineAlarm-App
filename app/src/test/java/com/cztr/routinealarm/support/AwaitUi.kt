@@ -1,6 +1,7 @@
 package com.cztr.routinealarm.support
 
 import android.app.Activity
+import android.os.Handler
 import android.os.Looper
 import android.view.View
 import android.view.ViewGroup
@@ -38,7 +39,20 @@ fun awaitUiReadersStopped(activity: Activity) {
         assertTrue("UI reader did not stop; labels: ${labels(activity)}",
             worker.awaitTermination(10, TimeUnit.SECONDS))
     }
-    shadowOf(Looper.getMainLooper()).idle()
+    // Workers are stopped, so all their replies are already queued. Drain that prefix only:
+    // self-reposting animation/frame messages must not turn test teardown into an endless idle().
+    val mainLooper = Looper.getMainLooper()
+    val handler = Handler(mainLooper)
+    var reachedBarrier = false
+    val barrier = Runnable { reachedBarrier = true }
+    handler.post(barrier)
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+    try {
+        while (!reachedBarrier && System.nanoTime() < deadline) {
+            shadowOf(mainLooper).runOneTask()
+        }
+        assertTrue("Queued UI replies did not reach teardown barrier", reachedBarrier)
+    } finally { handler.removeCallbacks(barrier) }
 }
 
 private fun labels(activity: Activity): List<String> = views(activity.window.decorView)

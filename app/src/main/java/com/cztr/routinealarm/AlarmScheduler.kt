@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit
 
 object AlarmScheduler {
 
+    const val EXTRA_ROUTINE_PLAN_VERSION = "routine_plan_version"
     const val EXTRA_ROUTINE_VERSION = "routine_definition_version"
     const val EXTRA_ROUTINE_EPOCH = "routine_definition_epoch"
     const val EXTRA_EVENT_ID = "event_id"
@@ -88,24 +89,37 @@ object AlarmScheduler {
     }
 
     private fun cancelEvents(context: Context, events: List<RoutineEvent>) {
-        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
         events.forEach { event ->
-            try {
-                // Reuse the historical identity without creating a token during cleanup.
-                val intent = Intent(context, AlarmReceiver::class.java).apply {
-                    data = eventUri(event.id)
-                }
-                val pendingIntent = PendingIntent.getBroadcast(
-                    context, 0, intent,
-                    PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
-                ) ?: return@forEach
-                alarmManager.cancel(pendingIntent)
-                pendingIntent.cancel()
-            } catch (error: RuntimeException) {
-                // Keep other cleanup/scheduling independent; the receiver also rejects old cues.
+            try { cancelEventRegistration(context, event.id) }
+            catch (error: RuntimeException) {
                 Log.w("RoutineAlarm", "Alte Alarmregistrierung nicht bestätigt entfernt: " + event.id, error)
             }
         }
+    }
+
+    private fun cancelEventRegistration(context: Context, eventId: String) {
+        val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val intent = Intent(context, AlarmReceiver::class.java).apply { data = eventUri(eventId) }
+        val pending = PendingIntent.getBroadcast(context, 0, intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) ?: return
+        alarmManager.cancel(pending)
+        pending.cancel()
+    }
+
+    /** Only ScheduleState's committed, ticket-fenced explicit command calls this worker adapter.
+     * No SQLite, broad plan replacement, or running-output stop occurs in this effect window.
+     */
+    internal fun reconcilePersonalRoutineRegistration(context: Context,
+        record: com.cztr.routinealarm.occurrence.PersonalRoutineRecord) {
+        check(android.os.Looper.myLooper() != android.os.Looper.getMainLooper())
+        check(!record.quarantined && record.version > 0 && record.planVersion > 0)
+        if (!record.event.enabled) {
+            cancelEventRegistration(context, record.event.id)
+            return
+        }
+        val snapshot = ScheduleRegistry.Snapshot(listOf(record.event), listOf(record.event),
+            mapOf(record.event.id to record), record.restoreEpoch)
+        check(scheduleEventFromSnapshot(context, record.event, ZonedDateTime.now(), snapshot))
     }
 
     fun scheduleEvent(
@@ -275,6 +289,7 @@ object AlarmScheduler {
                 AlarmReceiver::class.java
             ).apply {
                 data = eventUri(event.id)
+                putExtra(EXTRA_ROUTINE_PLAN_VERSION, snapshot.definitions[event.id]?.planVersion ?: 0L)
                 putExtra(EXTRA_ROUTINE_VERSION, snapshot.definitions[event.id]?.version ?: 0L)
                 putExtra(EXTRA_ROUTINE_EPOCH, snapshot.restoreEpoch)
 
