@@ -189,7 +189,7 @@ class C5PlanStudioReleaseViewportTest {
                 layout(shell)
                 val detail = views(shell).filterIsInstance<StudioScreenView>().single()
                 assertNotSame("Routine touch must reach the real host selection", filtered, detail)
-                val authority = views(detail).filterIsInstance<TextView>().single { it.text == "Nur ansehen" }
+                val authority = views(detail).filterIsInstance<TextView>().single { it.text == "Routine bearbeiten" }
                 reveal(shell, authority, requireTouchTarget = false)
                 assertTrue("The selected detail is reachable below the routine list", scroll(shell).scrollY > 0)
                 assertFalse(ScheduleState.isEnabled(activity))

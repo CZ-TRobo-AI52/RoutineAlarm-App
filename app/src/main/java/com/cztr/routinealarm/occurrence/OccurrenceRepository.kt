@@ -112,6 +112,55 @@ class SqliteOccurrenceRepository(
     fun readPersonalRoutine(eventId: String): PersonalRoutineRecord? =
         readSnapshot { PersonalRoutinePersistence.read(it, eventId) }
 
+    /** Atomic editor fences. This read never saves, activates, or refreshes a retained request. */
+    fun personalRoutineEditorSnapshot(eventId: String): PersonalRoutineRecord? = readSnapshot { db ->
+        val stored = PersonalRoutinePersistence.read(db, eventId)
+        val event = stored?.event ?: com.cztr.routinealarm.PersonalSchedule.allEvents.firstOrNull { it.id == eventId }
+            ?: return@readSnapshot null
+        val restored = db.rawQuery("SELECT 1 FROM restored_occurrences r JOIN occurrences o ON r.occurrence_id = o.occurrence_id WHERE o.is_test = 0 AND o.event_id = ? LIMIT 1",
+            arrayOf(eventId)).use { it.moveToFirst() }
+        val quarantined = stored?.quarantined == true || restored
+        PersonalRoutineRecord(PersonalRoutinePersistence.decode(PersonalRoutinePersistence.encode(
+            event.copy(enabled = event.enabled && !quarantined))), stored?.version ?: 0L,
+            PersonalPlanPersistence.read(db, eventId).version, PersonalRoutinePersistence.epoch(db), quarantined)
+    }
+
+    /** Read-only recovery of this exact original save; absence never triggers an automatic save. */
+    fun personalRoutineSaveReceipt(request: PersonalRoutineSaveRequest): PersonalRoutineRecord? = readSnapshot { db ->
+        PersonalRoutinePersistence.receipt(db, request.stableRequestId, PersonalRoutinePersistence.payload(request))
+    }
+
+    /** Worker-thread explicit command, separate from editing. Commit receipt is not a device-effect receipt. */
+    fun setPersonalRoutineEnabled(input: PersonalRoutineActivationRequest): PersonalRoutineSaveResult = transaction { db ->
+        val request = input.copy(event = PersonalRoutinePersistence.decode(PersonalRoutinePersistence.encode(input.event)))
+        require(request.stableRequestId.isNotBlank() && request.stableRequestId.length <= 256)
+        require(request.expectedVersion >= 0 && request.expectedPlanVersion >= 0)
+        val actual = PersonalRoutinePersistence.read(db, request.event.id)
+        val epoch = PersonalRoutinePersistence.epoch(db)
+        if (request.expectedRestoreEpoch != epoch)
+            return@transaction PersonalRoutineSaveResult.Conflict(actual, "RESTORE_EPOCH")
+        PersonalRoutinePersistence.receipt(db, request.stableRequestId, PersonalRoutinePersistence.payload(request))?.let {
+            return@transaction PersonalRoutineSaveResult.Saved(it, true)
+        }
+        if (actual?.quarantined == true) return@transaction PersonalRoutineSaveResult.Conflict(actual, "RESTORE_QUARANTINE")
+        val current = actual?.event ?: com.cztr.routinealarm.PersonalSchedule.allEvents.firstOrNull { it.id == request.event.id }
+            ?: return@transaction PersonalRoutineSaveResult.Conflict(null, "MISSING_DEFINITION")
+        if (request.expectedVersion != (actual?.version ?: 0L))
+            return@transaction PersonalRoutineSaveResult.Conflict(actual, "DEFINITION_VERSION")
+        if (request.event.copy(enabled = false) != current.copy(enabled = false))
+            return@transaction PersonalRoutineSaveResult.Conflict(actual, "DEFINITION_CONTENT")
+        val authority = PersonalPlanPersistence.read(db, current.id)
+        if (request.expectedPlanVersion != authority.version)
+            return@transaction PersonalRoutineSaveResult.Conflict(actual, "PLAN_VERSION")
+        // Existing replacement retires only untouched future occurrences, preserving due/started/history.
+        val plan = replacePersonalPlan(db, OccurrenceScope.PersonalEvent(current.id), authority.version,
+            emptyList(), "activation:" + UUID.randomUUID(), clock.zone, clock.instant()) as PersonalPlanDecision.Ready
+        val record = PersonalRoutineRecord(current.copy(enabled = request.enabled), Math.addExact(request.expectedVersion, 1L),
+            plan.next.version, epoch, false)
+        PersonalRoutinePersistence.insert(db, request.stableRequestId, PersonalRoutinePersistence.payload(request), record)
+        PersonalRoutineSaveResult.Saved(record)
+    }
+
     fun savePersonalRoutine(input: PersonalRoutineSaveRequest): PersonalRoutineSaveResult = transaction { db ->
         val request = input.copy(event = PersonalRoutinePersistence.decode(PersonalRoutinePersistence.encode(input.event)))
         require(request.stableRequestId.isNotBlank() && request.stableRequestId.length <= 256)

@@ -67,7 +67,11 @@ object ScheduleRegistry {
         SqliteOccurrenceRepository(context.applicationContext, Clock.systemDefaultZone()).use { repository ->
             val catalog = repository.personalRoutineCatalog()
             val records = catalog.definitions
-            val personal = personalEvents(records.map { it.event.copy(enabled = false) })
+            val byId = records.associateBy { it.event.id }
+            val personal = personalEvents(records.map { it.event.copy(enabled = false) }).map { event ->
+                val record = byId[event.id]
+                if (record != null && !record.quarantined) record.event else event
+            }
             Snapshot(Collections.unmodifiableList(personal + TrainingSchedule.allEvents),
                 Collections.unmodifiableList(personal + TrainingSessionPlan.startEvents),
                 Collections.unmodifiableMap(records.associateBy { it.event.id }), catalog.restoreEpoch)

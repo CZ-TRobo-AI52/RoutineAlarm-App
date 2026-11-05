@@ -16,6 +16,10 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.Gravity
 import android.view.View
+import android.view.ViewGroup
+import com.cztr.routinealarm.ui.studio.*
+import com.cztr.routinealarm.occurrence.*
+import java.time.Clock
 import android.widget.Button
 import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
@@ -48,6 +52,11 @@ class MainActivity : Activity() {
     private var showTrainingDetails = false
     private var studioFilter = com.cztr.routinealarm.ui.studio.StudioFilter.ALL
     private var studioSelectedId: String? = null
+    private val studioIo = com.cztr.routinealarm.execution.LatestUiLoader()
+    private var studioEditor: StudioEditorView? = null
+    private var restoredStudioEditor: Bundle? = null
+    private var studioSession: String? = null
+    private var studioSaveRequest: String? = null
     private var recoveryRequestedThisSession = false
     private var weeklyUiVisible = true
 
@@ -74,6 +83,9 @@ class MainActivity : Activity() {
             it.name == savedInstanceState?.getString("r52_studio_filter")
         } ?: com.cztr.routinealarm.ui.studio.StudioFilter.ALL
         studioSelectedId = savedInstanceState?.getString("r52_studio_selected_id")
+        restoredStudioEditor = savedInstanceState?.getBundle("r52_studio_editor")
+        studioSession = savedInstanceState?.getString("r52_studio_session")
+        studioSaveRequest = savedInstanceState?.getString("r52_studio_save_request")
         render()
     }
 
@@ -83,6 +95,9 @@ class MainActivity : Activity() {
         outState.putBoolean("r52_training_details", showTrainingDetails)
         outState.putString("r52_studio_filter", studioFilter.name)
         outState.putString("r52_studio_selected_id", studioSelectedId)
+        outState.putBundle("r52_studio_editor", studioEditor?.saveDraftState() ?: restoredStudioEditor)
+        outState.putString("r52_studio_session", studioSession)
+        outState.putString("r52_studio_save_request", studioSaveRequest)
         super.onSaveInstanceState(outState)
     }
 
@@ -133,11 +148,13 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         ScheduleState.unobserve(this, weeklyObserver)
         testStatusLoader.close()
+        studioIo.close()
         super.onDestroy()
     }
 
     private fun render() {
         testStatusLoader.invalidate()
+        studioIo.invalidate()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(24), dp(20), dp(24))
@@ -207,28 +224,7 @@ class MainActivity : Activity() {
                     requestedEnabled = ScheduleState.requestedEnabled(this),
                 ))
             }
-            AppDestination.STUDIO -> {
-                val studioInput = com.cztr.routinealarm.ui.studio.StudioProjectionSource.from(
-                    PersonalSchedule.allEvents,
-                    studioFilter,
-                    studioSelectedId,
-                )
-                val studio = com.cztr.routinealarm.ui.studio.StudioUiMapper.map(studioInput)
-                root.addView(com.cztr.routinealarm.ui.studio.StudioScreenView(
-                    this,
-                    studio,
-                    colors,
-                    onSelectFilter = { filter ->
-                        studioFilter = filter
-                        studioSelectedId = null
-                        render()
-                    },
-                    onSelectRoutine = { id ->
-                        studioSelectedId = id
-                        render()
-                    },
-                ))
-            }
+            AppDestination.STUDIO -> addStudio(root)
             AppDestination.HISTORY -> addHistoryScreen(root)
             AppDestination.MORE -> {
                 @Suppress("DEPRECATION")
@@ -274,6 +270,114 @@ class MainActivity : Activity() {
             navigation.destination = target
             render()
         })
+    }
+
+
+    /** Catalog reads are snapshots on the existing UI I/O worker, never authority from static rows. */
+    private fun addStudio(root: LinearLayout) {
+        restoredStudioEditor?.let { state ->
+            val draft = runCatching { StudioEditorDraft.fromBundle(state) }.getOrNull()
+            restoredStudioEditor = null
+            if (draft != null) {
+                createStudioEditor(draft)
+                studioEditor?.restoreDraftState(state)
+            }
+        }
+        studioEditor?.let { editor ->
+            (editor.parent as? ViewGroup)?.removeView(editor)
+            root.addView(editor)
+            return
+        }
+        val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(container)
+        container.addView(secondaryText("Speicherung wird geprüft …"))
+        val app = applicationContext
+        studioIo.load({
+            SqliteOccurrenceRepository(app, Clock.systemDefaultZone()).use { it.personalRoutineCatalog() }
+        }) { result ->
+            if (isFinishing || isDestroyed || navigation.destination != AppDestination.STUDIO) return@load
+            container.removeAllViews()
+            result.fold(onSuccess = { catalog ->
+                val events = ScheduleRegistry.personalEvents(catalog.definitions.map { it.event.copy(enabled = false) })
+                val state = StudioUiMapper.map(StudioProjectionSource.from(events, studioFilter, studioSelectedId))
+                container.addView(StudioScreenView(this, state, colors,
+                    onSelectFilter = { studioFilter = it; studioSelectedId = null; render() },
+                    onSelectRoutine = { studioSelectedId = it; render() },
+                    onCreateRoutine = { openStudioEditor(null) },
+                    onEditRoutine = { openStudioEditor(it) }))
+            }, onFailure = {
+                container.addView(secondaryText("Routinen konnten nicht geladen werden. Bitte erneut versuchen."))
+                container.addView(Button(this).apply { text = "Erneut laden"; setOnClickListener { render() } })
+            })
+        }
+    }
+
+    private fun openStudioEditor(eventId: String?) {
+        if (studioEditor != null) return
+        val session = java.util.UUID.randomUUID().toString()
+        studioSession = session
+        val app = applicationContext
+        studioIo.load({
+            SqliteOccurrenceRepository(app, Clock.systemDefaultZone()).use { repository ->
+                val catalog = repository.personalRoutineCatalog()
+                if (eventId == null) StudioEditorDraft.create(0, catalog.restoreEpoch)
+                else {
+                    val record = catalog.definitions.firstOrNull { it.event.id == eventId }
+                    check(record?.quarantined != true) { "Importierte Routine bleibt gesperrt." }
+                    val event = record?.event ?: PersonalSchedule.allEvents.firstOrNull { it.id == eventId }
+                    checkNotNull(event) { "Routine nicht mehr vorhanden." }
+                    // A legacy row has no captured plan authority. Version zero is conservative:
+                    // existing nonzero authority will conflict, never be refreshed at Save.
+                    StudioEditorDraft.edit(event, record?.version ?: 0, record?.planVersion ?: 0, catalog.restoreEpoch)
+                }
+            }
+        }) { result ->
+            if (session != studioSession || isFinishing || isDestroyed || navigation.destination != AppDestination.STUDIO) return@load
+            result.fold(onSuccess = { createStudioEditor(it); render() },
+                onFailure = { Toast.makeText(this, "Routine konnte nicht geöffnet werden. Bitte neu laden.", Toast.LENGTH_LONG).show() })
+        }
+    }
+
+    private fun createStudioEditor(draft: StudioEditorDraft) {
+        val session = studioSession ?: java.util.UUID.randomUUID().toString().also { studioSession = it }
+        studioEditor = StudioEditorView(this, draft, colors,
+            onSave = { request -> saveStudioRoutine(session, request) },
+            onCancel = {
+                if (studioSession == session) { clearStudioEditor(); render() }
+            })
+    }
+
+    private fun clearStudioEditor() {
+        studioSession = null; studioSaveRequest = null
+        studioEditor = null; restoredStudioEditor = null
+    }
+
+    private fun saveStudioRoutine(session: String, request: StudioSaveRequest) {
+        val editor = studioEditor ?: return
+        if (studioSession != session || editor.currentDraft().eventId != request.event.id) return
+        studioSaveRequest = request.requestId
+        val app = applicationContext
+        val original = PersonalRoutineSaveRequest(request.requestId,
+            request.event.copy(daysOfWeek = request.event.daysOfWeek.toSet()), request.expectedVersion,
+            request.expectedPlanVersion, request.expectedRestoreEpoch)
+        val admitted = studioIo.submit({
+            SqliteOccurrenceRepository(app, Clock.systemDefaultZone()).use { it.savePersonalRoutine(original) }
+        }) { result ->
+            if (studioSession != session || studioSaveRequest != request.requestId || studioEditor !== editor || isDestroyed) return@submit
+            result.fold(onSuccess = { outcome ->
+                when (outcome) {
+                    is PersonalRoutineSaveResult.Saved -> {
+                        // Historical duplicate receipts acknowledge this request only; reload current data.
+                        studioSelectedId = request.event.id
+                        clearStudioEditor()
+                        Toast.makeText(this, "Speicheranfrage bestätigt. Aktueller Stand wird geladen.", Toast.LENGTH_SHORT).show()
+                        render()
+                    }
+                    is PersonalRoutineSaveResult.Conflict -> editor.setSaveStatus(StudioSaveStatus.CONFLICT)
+                }
+            }, onFailure = { editor.setSaveStatus(StudioSaveStatus.UNKNOWN_EFFECT) })
+        }
+        if (!admitted) editor.setSaveStatus(StudioSaveStatus.ERROR)
     }
 
     private fun addHeader(

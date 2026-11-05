@@ -37,19 +37,22 @@ class StudioScreenProjectionTest {
     }
 
     @Test fun selectingRoutineOnlyOpensReadOnlyDetails() = withMain { activity ->
-        destination(activity, "Studio").performClick()
+        destination(activity, "Studio").performClick(); awaitUi(activity)
         val item = buttons(activity).first { it.tag == "studio_routine_item" }
-        item.performClick()
+        item.performClick(); awaitUi(activity)
 
-        assertTrue(labels(activity).contains("Nur ansehen"))
-        assertTrue(labels(activity).any { it.contains("Bearbeiten und Speichern werden erst") })
+        assertTrue(labels(activity).contains("Routine bearbeiten"))
+        assertTrue(buttons(activity).single { it.tag == "studio_edit" }.isEnabled)
+        assertTrue(com.cztr.routinealarm.support.onRoutineStorage {
+            com.cztr.routinealarm.occurrence.SqliteOccurrenceRepository(activity, java.time.Clock.systemDefaultZone()).use { it.listPersonalRoutines().isEmpty() }
+        })
         assertFalse(ScheduleState.isEnabled(activity))
         assertNull(shadowOf(activity).nextStartedActivity)
     }
 
     @Test fun filtersDoNotMutateTheWeeklyPlan() = withMain { activity ->
-        destination(activity, "Studio").performClick()
-        buttons(activity).single { it.text == "Aktiv" }.performClick()
+        destination(activity, "Studio").performClick(); awaitUi(activity)
+        buttons(activity).single { it.text == "Aktiv" }.performClick(); awaitUi(activity)
 
         assertFalse(ScheduleState.isEnabled(activity))
         assertTrue(buttons(activity).single { it.text == "Aktiv" }.isSelected)
@@ -59,7 +62,7 @@ class StudioScreenProjectionTest {
         RuntimeEnvironment.setFontScale(2f)
         try {
             withMain { activity ->
-                destination(activity, "Studio").performClick()
+                destination(activity, "Studio").performClick(); awaitUi(activity)
                 val item = buttons(activity).first { it.tag == "studio_routine_item" }
                 assertTrue(item.minimumHeight >= (48 * activity.resources.displayMetrics.density).toInt())
                 assertNull(item.ellipsize)

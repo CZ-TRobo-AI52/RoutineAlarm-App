@@ -13,6 +13,8 @@ data class PersonalRoutineRecord(val event: RoutineEvent, val version: Long, val
 data class PersonalRoutineCatalog(val definitions: List<PersonalRoutineRecord>, val restoreEpoch: String)
 data class PersonalRoutineSaveRequest(val stableRequestId: String, val event: RoutineEvent,
     val expectedVersion: Long, val expectedPlanVersion: Long, val expectedRestoreEpoch: String)
+data class PersonalRoutineActivationRequest(val stableRequestId: String, val event: RoutineEvent,
+    val enabled: Boolean, val expectedVersion: Long, val expectedPlanVersion: Long, val expectedRestoreEpoch: String)
 sealed class PersonalRoutineSaveResult {
     data class Saved(val record: PersonalRoutineRecord, val duplicate: Boolean = false) : PersonalRoutineSaveResult()
     data class Conflict(val actual: PersonalRoutineRecord?, val reason: String) : PersonalRoutineSaveResult()
@@ -37,6 +39,19 @@ internal object PersonalRoutinePersistence {
         put("event", encode(request.event)); put("version", request.expectedVersion)
         put("plan", request.expectedPlanVersion); put("epoch", request.expectedRestoreEpoch)
     }.toString()
+    fun payload(request: PersonalRoutineActivationRequest): String = JSONObject().apply {
+        put("event", encode(request.event.copy(enabled = request.enabled))); put("version", request.expectedVersion)
+        put("plan", request.expectedPlanVersion); put("epoch", request.expectedRestoreEpoch); put("activation", true)
+    }.toString()
+    /** Historical receipt: original fences, never refreshed to grant new authority after restore. */
+    fun receipt(db: SQLiteDatabase, id: String, expectedPayload: String): PersonalRoutineRecord? = db.rawQuery(
+        "SELECT snapshot, version, plan_version, restore_epoch, request_payload FROM personal_routine_definitions WHERE request_id = ?",
+        arrayOf(id)).use { c ->
+        if (!c.moveToFirst()) null else {
+            require(c.getString(4) == expectedPayload) { "Stable request ID reused with different content" }
+            PersonalRoutineRecord(decode(c.getString(0)), c.getLong(1), c.getLong(2), c.getString(3), c.getString(3) != epoch(db))
+        }
+    }
     fun epoch(db: SQLiteDatabase): String = db.rawQuery(
         "SELECT delivery_epoch FROM store_metadata WHERE singleton = 1", null).use { check(it.moveToFirst()); it.getString(0) }
     fun read(db: SQLiteDatabase, eventId: String): PersonalRoutineRecord? = db.rawQuery(
@@ -56,10 +71,13 @@ internal object PersonalRoutinePersistence {
         }
     }
     fun insert(db: SQLiteDatabase, request: PersonalRoutineSaveRequest, record: PersonalRoutineRecord) {
+        insert(db, request.stableRequestId, payload(request), record)
+    }
+    fun insert(db: SQLiteDatabase, requestId: String, requestPayload: String, record: PersonalRoutineRecord) {
         db.insertOrThrow("personal_routine_definitions", null, ContentValues().apply {
             put("event_id", record.event.id); put("version", record.version); put("plan_version", record.planVersion)
-            put("snapshot", encode(record.event)); put("request_id", request.stableRequestId)
-            put("request_payload", payload(request)); put("restore_epoch", record.restoreEpoch)
+            put("snapshot", encode(record.event)); put("request_id", requestId)
+            put("request_payload", requestPayload); put("restore_epoch", record.restoreEpoch)
         })
     }
     val schema = linkedMapOf(

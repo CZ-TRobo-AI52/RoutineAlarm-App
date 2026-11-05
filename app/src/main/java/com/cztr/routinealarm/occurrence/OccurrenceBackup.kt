@@ -179,7 +179,7 @@ internal object OccurrenceBackup {
         val definitionVersions = mutableMapOf<String, Long>()
         rows(7).forEach { row ->
             val event = PersonalRoutinePersistence.decode(row.text("snapshot"))
-            require(!event.enabled && event.id == row.text("event_id"))
+            require(event.id == row.text("event_id"))
             val version = row.number("version")
             require(version == (definitionVersions[event.id] ?: 0L) + 1)
             definitionVersions[event.id] = version
@@ -188,7 +188,16 @@ internal object OccurrenceBackup {
             require(rows(5).any { it.text("event_id") == event.id && it.number("version") == row.number("plan_version") })
             val request = JSONObject(row.text("request_payload"))
             require(request.getLong("version") == version - 1 && request.getLong("plan") == row.number("plan_version") - 1)
-            require(PersonalRoutinePersistence.decode(request.getString("event")).copy(enabled = false) == event)
+            val requested = PersonalRoutinePersistence.decode(request.getString("event"))
+            if (request.optBoolean("activation", false)) {
+                require(requested == event)
+                val previous = rows(7).firstOrNull { it.text("event_id") == event.id && it.number("version") == version - 1 }
+                    ?.let { PersonalRoutinePersistence.decode(it.text("snapshot")) }
+                    ?: com.cztr.routinealarm.PersonalSchedule.allEvents.firstOrNull { it.id == event.id }
+                require(previous != null && previous.copy(enabled = false) == event.copy(enabled = false))
+            } else {
+                require(!event.enabled && requested.copy(enabled = false) == event)
+            }
             require(request.getString("epoch") == row.text("restore_epoch"))
         }
         val revisions = rows(0).associateUnique("revision_id")
