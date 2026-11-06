@@ -2,6 +2,8 @@ package com.cztr.routinealarm.r52.skill
 
 class R52SkillEngine(
     private val registry: SkillRegistry = SkillRegistry(),
+    // Must be configured by the trusted host; selection is denied when absent.
+    private val familywiseBudget: FamilywiseEvidenceBudget? = null,
 ) {
     private val router = SkillRouter(registry)
 
@@ -43,7 +45,13 @@ class R52SkillEngine(
         authority: PinnedEd25519EvidenceAuthority,
         signedIndex: SignedSkillEvidenceIndex,
         evidenceStore: SkillEvidenceBlobStore,
-    ): EvidenceBoundImprovementDecision = EvidenceBoundImprovementSelector(
+    ): EvidenceBoundImprovementDecision = if (familywiseBudget == null) {
+        EvidenceBoundImprovementDecision(
+            winner = null, accepted = emptyList(),
+            rejected = skillIds.distinct().associateWith { "comparison_family_not_preregistered" },
+            reason = "comparison_family_not_preregistered",
+        )
+    } else EvidenceBoundImprovementSelector(
         registry = registry,
         authority = authority,
         signedIndex = signedIndex,
@@ -51,6 +59,7 @@ class R52SkillEngine(
         expectedEvaluationId = request.evaluationId,
         expectedDatasetSha256 = request.datasetSha256,
         expectedBaselineArtifactSha256 = request.baselineArtifactSha256,
+        familywiseBudget = familywiseBudget,
         minimumSamples = request.minimumSamples,
     ).chooseBest(skillIds)
 

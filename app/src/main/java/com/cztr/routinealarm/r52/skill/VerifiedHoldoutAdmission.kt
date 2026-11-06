@@ -69,12 +69,24 @@ internal class PinnedHoldoutProofVerifier(
 }
 
 /** Reused by verified admission and authoritative selection; one bound, one statistical policy. */
+/**
+ * Host-pinned upper bound on all hypotheses screened against this evaluation dataset,
+ * including candidates considered in previous calls. This does NOT enforce preregistration;
+ * a durable external evaluator must bind and audit the family across sessions.
+ */
+data class FamilywiseEvidenceBudget(val registeredHypotheses: Int) {
+    init {
+        require(registeredHypotheses in 1..1_000_000) { "invalid preregistered hypothesis count" }
+    }
+}
+
+/** Bonferroni + one-sided Hoeffding: family-wise false-positive risk <= 0.05. */
 internal object SkillHoldoutConfidence {
     fun observedGain(observation: SkillHoldoutObservation): Double =
         (observation.wins - observation.losses).toDouble() / observation.sampleSize
 
-    fun lowerBoundGain(observation: SkillHoldoutObservation): Double =
-        observedGain(observation) - sqrt(2.0 * ln(20.0) / observation.sampleSize)
+    fun lowerBoundGain(observation: SkillHoldoutObservation, budget: FamilywiseEvidenceBudget): Double =
+        observedGain(observation) - sqrt(2.0 * ln(20.0 * budget.registeredHypotheses) / observation.sampleSize)
 }
 
 /**
@@ -88,6 +100,7 @@ class PinnedHoldoutVerifiedAdmission(
     expectedEvaluationId: String,
     expectedDatasetSha256: String,
     expectedBaselineArtifactSha256: String,
+    private val familywiseBudget: FamilywiseEvidenceBudget,
     minimumSamples: Int = 100,
 ) : VerifiedAdmissionPolicy {
     private val proof = PinnedHoldoutProofVerifier(
@@ -98,7 +111,7 @@ class PinnedHoldoutVerifiedAdmission(
     override fun admit(receipt: SkillReceipt): PromotionDecision {
         val checked = proof.verify(receipt)
         val observation = checked.observation ?: return PromotionDecision(false, checked.reason)
-        if (SkillHoldoutConfidence.lowerBoundGain(observation) <= 0.0) {
+        if (SkillHoldoutConfidence.lowerBoundGain(observation, familywiseBudget) <= 0.0) {
             return PromotionDecision(false, "no_confident_positive_gain")
         }
         return PromotionDecision(true, "verified_holdout_admitted")

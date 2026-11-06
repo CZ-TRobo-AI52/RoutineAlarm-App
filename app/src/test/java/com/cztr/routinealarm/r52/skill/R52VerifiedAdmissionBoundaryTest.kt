@@ -45,10 +45,11 @@ class R52VerifiedAdmissionBoundaryTest {
         fun verifiedPolicy(authorityOverride: PinnedEd25519EvidenceAuthority = authority(),
             storeOverride: SkillEvidenceBlobStore = store,
             expectedDataset: String = dataset,
+            familySize: Int = 1,
         ) = PinnedHoldoutVerifiedAdmission(
             authority = authorityOverride, signedIndex = index, evidenceStore = storeOverride,
             expectedEvaluationId = evaluation, expectedDatasetSha256 = expectedDataset,
-            expectedBaselineArtifactSha256 = baseline, minimumSamples = 100,
+            expectedBaselineArtifactSha256 = baseline, familywiseBudget = FamilywiseEvidenceBudget(familySize), minimumSamples = 100,
         )
         fun skill(id: String = "r52-verified") = SkillDescriptor(
             id = id, version = SkillVersion(1, 0, 0), purpose = "evaluate reusable skill",
@@ -216,4 +217,14 @@ class R52VerifiedAdmissionBoundaryTest {
         assertNull(registry.verifiedReceiptFor(skill.id))
         assertEquals("stale_receipt_replay", registry.promote(skill.id, SkillLifecycleState.VERIFIED, r).reason)
     }
+    @Test fun signedNullWinnerCannotCrossVerifiedWithPreregisteredFamilyBudget() {
+        val f = Fixture()
+        val registry = SkillRegistry(f.authority(), f.verifiedPolicy(familySize = 500))
+        val skill = f.deployed(registry)
+        val receipt = f.issue(skill, SkillLifecycleState.VERIFIED, 4, f.payload(wins = 63, losses = 37))
+        assertEquals("no_confident_positive_gain", registry.promote(skill.id, SkillLifecycleState.VERIFIED, receipt).reason)
+        assertEquals(SkillLifecycleState.DEPLOYED, registry.get(skill.id)!!.state)
+        assertNull(registry.verifiedReceiptFor(skill.id))
+    }
+
 }

@@ -94,12 +94,12 @@ class R52EvidenceBoundSelectionTest {
         computeMicrounits = 0, complexityMicrounits = 0, riskMicrounits = 0,
     )
 
-    private fun selector(h: Harness, registry: SkillRegistry, sourceCommit: String = commit, datasetSha: String = dataset) =
+    private fun selector(h: Harness, registry: SkillRegistry, sourceCommit: String = commit, datasetSha: String = dataset, familySize: Int = 1) =
         EvidenceBoundImprovementSelector(
             registry = registry, authority = h.authority(sourceCommit = sourceCommit),
             signedIndex = h.index, evidenceStore = h.store,
             expectedEvaluationId = eval, expectedDatasetSha256 = datasetSha,
-            expectedBaselineArtifactSha256 = baseline,
+            expectedBaselineArtifactSha256 = baseline, familywiseBudget = FamilywiseEvidenceBudget(familySize),
             minimumSamples = 100,
         )
 
@@ -194,7 +194,7 @@ class R52EvidenceBoundSelectionTest {
         val r = SkillRegistry(h.authority(), VerifiedAdmissionPolicy { PromotionDecision(true, "fixture_only") })
         h.promoteThroughAllStages(r, h.skill("fast"), SkillHoldoutEvidenceCodec.encode(outcome(wins = 900, losses = 100, tokens = 1_000, latency = 1_000)))
         h.promoteThroughAllStages(r, h.skill("slow"), SkillHoldoutEvidenceCodec.encode(outcome(wins = 990, losses = 10, tokens = 1_000_000, latency = 1_000_000)))
-        val d = selector(h, r).chooseBest(listOf("slow", "fast"))
+        val d = selector(h, r, familySize = 2).chooseBest(listOf("slow", "fast"))
         assertEquals("fast", d.winner!!.skillId)
         assertEquals(2, d.accepted.size)
     }
@@ -238,7 +238,7 @@ class R52EvidenceBoundSelectionTest {
         val decision = EvidenceBoundImprovementSelector(
             registry = r, authority = h.authority(), signedIndex = unstableIndex,
             evidenceStore = h.store, expectedEvaluationId = eval,
-            expectedDatasetSha256 = dataset, expectedBaselineArtifactSha256 = baseline,
+            expectedDatasetSha256 = dataset, expectedBaselineArtifactSha256 = baseline, familywiseBudget = FamilywiseEvidenceBudget(1),
         ).chooseBest(listOf("a"))
         assertNull(decision.winner)
         assertEquals("evidence_index_changed", decision.rejected["a"])
@@ -254,7 +254,7 @@ class R52EvidenceBoundSelectionTest {
         val d = EvidenceBoundImprovementSelector(
             registry = r, authority = h.authority(), signedIndex = attackerIndex,
             evidenceStore = h.store, expectedEvaluationId = eval,
-            expectedDatasetSha256 = dataset, expectedBaselineArtifactSha256 = baseline,
+            expectedDatasetSha256 = dataset, expectedBaselineArtifactSha256 = baseline, familywiseBudget = FamilywiseEvidenceBudget(1),
         ).chooseBest(listOf("a"))
         assertNull(d.winner)
         assertEquals("evidence_not_authenticated", d.rejected["a"])
@@ -278,7 +278,7 @@ class R52EvidenceBoundSelectionTest {
         val h = Harness(now, scope, commit)
         val r = SkillRegistry(h.authority(), VerifiedAdmissionPolicy { PromotionDecision(true, "fixture_only") })
         h.promoteThroughAllStages(r, h.skill("a"), SkillHoldoutEvidenceCodec.encode(outcome()))
-        val engine = R52SkillEngine(r)
+        val engine = R52SkillEngine(r, FamilywiseEvidenceBudget(1))
         val decision = engine.selectEvidenceBoundImprovements(
             skillIds = listOf("a"),
             request = EvidenceBoundSelectionRequest(eval, dataset, baseline, minimumSamples = 100),
@@ -303,11 +303,42 @@ class R52EvidenceBoundSelectionTest {
             registry = r, authority = h.authority(blobStore = unstableStore),
             signedIndex = h.index, evidenceStore = unstableStore,
             expectedEvaluationId = eval, expectedDatasetSha256 = dataset,
-            expectedBaselineArtifactSha256 = baseline,
+            expectedBaselineArtifactSha256 = baseline, familywiseBudget = FamilywiseEvidenceBudget(1),
         ).chooseBest(listOf("a"))
         assertNull(d.winner)
         assertEquals("evidence_hash_changed", d.rejected["a"])
         assertEquals(2, reads)
+    }
+
+    @Test fun signedSingleCandidateNullWinnerIsRejectedByPinnedFamilyBudget() {
+        val h = Harness(now, scope, commit)
+        // Bypass is fixture-only for promotion; the selector must still enforce statistical evidence.
+        val r = SkillRegistry(h.authority(), VerifiedAdmissionPolicy { PromotionDecision(true, "fixture_only") })
+        h.promoteThroughAllStages(r, h.skill("weak"), SkillHoldoutEvidenceCodec.encode(
+            outcome(wins = 63, losses = 37),
+        ))
+        val d = EvidenceBoundImprovementSelector(
+            registry = r, authority = h.authority(), signedIndex = h.index,
+            evidenceStore = h.store, expectedEvaluationId = eval,
+            expectedDatasetSha256 = dataset, expectedBaselineArtifactSha256 = baseline,
+            familywiseBudget = FamilywiseEvidenceBudget(500),
+        ).chooseBest(listOf("weak"))
+        assertNull(d.winner)
+        assertEquals("no_confident_positive_gain", d.rejected["weak"])
+    }
+
+    @Test fun selectionCannotSmuggleMoreIdsThanHostPinnedFamily() {
+        val h = Harness(now, scope, commit)
+        val r = SkillRegistry(h.authority(), VerifiedAdmissionPolicy { PromotionDecision(true, "fixture_only") })
+        val d = EvidenceBoundImprovementSelector(
+            registry = r, authority = h.authority(), signedIndex = h.index,
+            evidenceStore = h.store, expectedEvaluationId = eval,
+            expectedDatasetSha256 = dataset, expectedBaselineArtifactSha256 = baseline,
+            familywiseBudget = FamilywiseEvidenceBudget(1),
+        ).chooseBest(listOf("a", "b"))
+        assertNull(d.winner)
+        assertEquals("comparison_family_budget_exceeded", d.reason)
+        assertEquals(2, d.rejected.size)
     }
 
 }

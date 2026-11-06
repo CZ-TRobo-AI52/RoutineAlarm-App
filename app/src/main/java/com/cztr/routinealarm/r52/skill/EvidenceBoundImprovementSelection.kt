@@ -142,6 +142,7 @@ class EvidenceBoundImprovementSelector(
     private val expectedEvaluationId: String,
     private val expectedDatasetSha256: String,
     private val expectedBaselineArtifactSha256: String,
+    private val familywiseBudget: FamilywiseEvidenceBudget,
     private val minimumSamples: Int = 100,
 ) {
     init {
@@ -154,9 +155,17 @@ class EvidenceBoundImprovementSelector(
     )
 
     fun chooseBest(skillIds: Collection<String>): EvidenceBoundImprovementDecision {
+        val uniqueIds = skillIds.distinct().sorted()
+        if (uniqueIds.size > familywiseBudget.registeredHypotheses) {
+            return EvidenceBoundImprovementDecision(
+                winner = null, accepted = emptyList(),
+                rejected = uniqueIds.associateWith { "comparison_family_budget_exceeded" },
+                reason = "comparison_family_budget_exceeded",
+            )
+        }
         val accepted = mutableListOf<EvidenceBoundImprovement>()
         val rejected = linkedMapOf<String, String>()
-        for (skillId in skillIds.distinct().sorted()) {
+        for (skillId in uniqueIds) {
             val (value, reason) = try {
                 evaluate(skillId)
             } catch (_: Exception) {
@@ -182,7 +191,7 @@ class EvidenceBoundImprovementSelector(
         val checked = verifier.verify(receipt)
         val observation = checked.observation ?: return null to checked.reason
         val observed = SkillHoldoutConfidence.observedGain(observation)
-        val lower = SkillHoldoutConfidence.lowerBoundGain(observation)
+        val lower = SkillHoldoutConfidence.lowerBoundGain(observation, familywiseBudget)
         if (lower <= 0.0) return null to "no_confident_positive_gain"
         val burden = 1.0 + observation.tokenCost / 1000.0 + observation.latencyMs / 1000.0 +
             observation.computeMicrounits / 1_000_000.0 + observation.complexityMicrounits / 1_000_000.0 +
