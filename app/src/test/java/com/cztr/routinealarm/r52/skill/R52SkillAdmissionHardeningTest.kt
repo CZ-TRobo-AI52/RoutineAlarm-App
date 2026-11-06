@@ -120,7 +120,7 @@ class R52SkillAdmissionHardeningTest {
 
     @Test fun callerReportedGroundTruthCannotInventValidatedUtility() {
         val fabricated = SkillEvalResult(10.0, 100, 100, 1.0, 1.0, 100, 0)
-        assertEquals(0.0, fabricated.validatedUtility())
+        assertEquals(0.0, fabricated.validatedUtility(), 0.0)
         assertTrue(fabricated.estimatedUtility() > 0.0)
     }
 
