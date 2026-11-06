@@ -57,6 +57,11 @@ class MainActivity : Activity() {
     private var restoredStudioEditor: Bundle? = null
     private var studioSession: String? = null
     private var studioSaveRequest: String? = null
+    private var studioActivation: PersonalRoutineActivationRequest? = null
+    private var studioActivationBusy = false
+    private var studioActivationBlocked = false
+    private var studioActivationNotice: String? = null
+    private var studioRenderGeneration = 0L
     private var recoveryRequestedThisSession = false
     private var weeklyUiVisible = true
 
@@ -86,6 +91,17 @@ class MainActivity : Activity() {
         restoredStudioEditor = savedInstanceState?.getBundle("r52_studio_editor")
         studioSession = savedInstanceState?.getString("r52_studio_session")
         studioSaveRequest = savedInstanceState?.getString("r52_studio_save_request")
+        studioActivationNotice = savedInstanceState?.getString("r52_activation_notice")
+        studioActivationBlocked = savedInstanceState?.getBoolean("r52_activation_blocked") ?: false
+        savedInstanceState?.getBundle("r52_activation_request")?.let { original ->
+            studioActivation = runCatching { PersonalRoutineActivationRequest(
+                requireNotNull(original.getString("id")),
+                PersonalRoutinePersistence.decode(requireNotNull(original.getString("event"))),
+                true, original.getLong("version"), original.getLong("plan"),
+                requireNotNull(original.getString("epoch"))) }.getOrNull()
+            studioActivationBlocked = studioActivation == null
+            studioActivationNotice = "Aktivierungsanfrage unbestätigt. Keine automatische Wiederholung."
+        }
         render()
     }
 
@@ -98,6 +114,13 @@ class MainActivity : Activity() {
         outState.putBundle("r52_studio_editor", studioEditor?.saveDraftState() ?: restoredStudioEditor)
         outState.putString("r52_studio_session", studioSession)
         outState.putString("r52_studio_save_request", studioSaveRequest)
+        outState.putString("r52_activation_notice", studioActivationNotice)
+        outState.putBoolean("r52_activation_blocked", studioActivationBlocked)
+        studioActivation?.let { original -> outState.putBundle("r52_activation_request", Bundle().apply {
+            putString("id", original.stableRequestId); putString("event", PersonalRoutinePersistence.encode(original.event))
+            putLong("version", original.expectedVersion); putLong("plan", original.expectedPlanVersion)
+            putString("epoch", original.expectedRestoreEpoch)
+        }) }
         super.onSaveInstanceState(outState)
     }
 
@@ -153,6 +176,7 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
+        studioRenderGeneration++
         testStatusLoader.invalidate()
         studioIo.invalidate()
         val root = LinearLayout(this).apply {
@@ -294,6 +318,14 @@ class MainActivity : Activity() {
             root.addView(editor)
             return
         }
+        studioActivationNotice?.let { root.addView(secondaryText(it)) }
+        studioActivation?.let { original ->
+            root.addView(secondaryButton(if (studioActivationBusy) "Aktivierung wird geprüft …" else "Ursprüngliche Aktivierung erneut anfragen").apply {
+                tag = "studio_activation_retry"; isEnabled = !studioActivationBusy
+                setOnClickListener { if (isEnabled) submitStudioActivation(original) }
+            })
+        }
+        val renderGeneration = studioRenderGeneration
         val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(container)
         container.addView(secondaryText("Speicherung wird geprüft …"))
@@ -304,17 +336,62 @@ class MainActivity : Activity() {
             if (isFinishing || isDestroyed || navigation.destination != AppDestination.STUDIO) return@load
             container.removeAllViews()
             result.fold(onSuccess = { catalog ->
-                val events = ScheduleRegistry.personalEvents(catalog.definitions.map { it.event.copy(enabled = false) })
-                val state = StudioUiMapper.map(StudioProjectionSource.from(events, studioFilter, studioSelectedId))
+                val definitions = catalog.definitions.associateBy { it.event.id }
+                val events = ScheduleRegistry.personalEvents(catalog.definitions.map { it.event.copy(enabled = false) }).map { event ->
+                    val record = definitions[event.id]
+                    if (record != null && !record.quarantined) record.event else event
+                }
+                fun status(id: String, fallback: String): String = definitions[id]?.let {
+                    if (it.quarantined) "Importiert · gesperrt" else if (it.event.enabled) "Aktiviert · Wirkung nicht bestätigt" else "Pausiert"
+                } ?: fallback
+                val projected = StudioUiMapper.map(StudioProjectionSource.from(events, studioFilter, studioSelectedId))
+                val state = projected.copy(items = projected.items.map { it.copy(statusLabel = status(it.id, it.statusLabel)) },
+                    selected = projected.selected?.let { it.copy(statusLabel = status(it.id, it.statusLabel)) })
+                val eligible = definitions[studioSelectedId]?.takeIf { !it.quarantined && !it.event.enabled }
+                    ?.takeIf { studioActivation == null && !studioActivationBlocked }
                 container.addView(StudioScreenView(this, state, colors,
                     onSelectFilter = { studioFilter = it; studioSelectedId = null; render() },
                     onSelectRoutine = { studioSelectedId = it; render() },
                     onCreateRoutine = { openStudioEditor(null) },
-                    onEditRoutine = { openStudioEditor(it) }))
+                    onEditRoutine = { openStudioEditor(it) },
+                    onActivateRoutine = { id ->
+                        if (eligible != null && id == eligible.event.id && renderGeneration == studioRenderGeneration &&
+                            navigation.destination == AppDestination.STUDIO && studioEditor == null &&
+                            studioActivation == null && !isFinishing && !isDestroyed) {
+                            val original = PersonalRoutineActivationRequest(java.util.UUID.randomUUID().toString(),
+                                PersonalRoutinePersistence.decode(PersonalRoutinePersistence.encode(eligible.event)),
+                                true, eligible.version, eligible.planVersion, eligible.restoreEpoch)
+                            studioActivation = original
+                            submitStudioActivation(original)
+                        }
+                    }, activationRoutineId = eligible?.event?.id, activationBusy = studioActivationBusy))
             }, onFailure = {
                 container.addView(secondaryText("Routinen konnten nicht geladen werden. Bitte erneut versuchen."))
                 container.addView(Button(this).apply { text = "Erneut laden"; setOnClickListener { render() } })
             })
+        }
+    }
+
+    /** Retry always uses the retained immutable command; a receipt never grants a new effect. */
+    private fun submitStudioActivation(original: PersonalRoutineActivationRequest) {
+        if (studioActivationBusy || studioActivation != original || isFinishing || isDestroyed) return
+        studioActivationBusy = true
+        studioActivationNotice = "Aktivierung angefragt; Wirkung unbestätigt."
+        render()
+        ScheduleState.requestPersonalRoutineEnabled(applicationContext, original) { result ->
+            if (isDestroyed || isFinishing || studioActivation != original) return@requestPersonalRoutineEnabled
+            studioActivationBusy = false
+            val saved = result.persistence as? PersonalRoutineSaveResult.Saved
+            studioActivationNotice = when {
+                saved?.duplicate == true -> "Frühere Anfrage gespeichert. Keine neue Alarmwirkung bestätigt."
+                result.persistence is PersonalRoutineSaveResult.Conflict -> "Routine wurde zwischenzeitlich geändert oder gesperrt. Bitte aktuellen Stand prüfen."
+                saved != null && result.reason == "WEEKLY_DISABLED" -> "Aktivierung gespeichert. Wochenplan ist pausiert; kein Alarm beauftragt."
+                saved != null && result.reason == "EXACT_PERMISSION_REQUIRED" -> "Aktivierung gespeichert. Berechtigung für genaue Alarme fehlt; kein Alarm beauftragt."
+                saved != null -> "Aktivierung gespeichert. Alarmwirkung bleibt unbestätigt."
+                else -> "Aktivierungsanfrage unbestätigt. Ursprüngliche Aktivierung kann erneut angefragt werden."
+            }
+            if (saved != null || result.persistence is PersonalRoutineSaveResult.Conflict) studioActivation = null
+            if (navigation.destination == AppDestination.STUDIO && studioEditor == null && weeklyUiVisible) render()
         }
     }
 

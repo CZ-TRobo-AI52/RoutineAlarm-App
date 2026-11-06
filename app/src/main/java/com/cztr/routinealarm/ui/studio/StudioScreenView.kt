@@ -14,7 +14,7 @@ import com.cztr.routinealarm.ui.design.R52Colors
 import com.cztr.routinealarm.ui.design.R52Dimensions
 
 @SuppressLint("ViewConstructor")
-class StudioScreenView(
+class StudioScreenView @kotlin.jvm.JvmOverloads constructor(
     context: Context,
     state: StudioUiState,
     colors: R52Colors,
@@ -22,9 +22,17 @@ class StudioScreenView(
     onSelectRoutine: (String) -> Unit,
     onCreateRoutine: (() -> Unit)? = null,
     onEditRoutine: ((String) -> Unit)? = null,
+    onActivateRoutine: ((String) -> Unit)? = null,
+    activationRoutineId: String? = null,
+    activationBusy: Boolean = false,
 ) : LinearLayout(context) {
     init {
         orientation = VERTICAL
+        // The host supplies eligibility from its frozen saved-routine snapshot.
+        // This View never derives permission from labels, receipts, or restored state.
+        val canShowActivation = onActivateRoutine != null && activationRoutineId != null &&
+            state.selected?.id == activationRoutineId
+        val hasEditor = onCreateRoutine != null || onEditRoutine != null
         fun text(value: String, size: Float = 16f, strong: Boolean = false) = TextView(context).apply {
             this.text = value
             textSize = size
@@ -38,9 +46,9 @@ class StudioScreenView(
         }
 
         addView(card().apply {
-            addView(text(if (onCreateRoutine == null && onEditRoutine == null) "ROUTINESTUDIO · SICHERE VORSCHAU" else "ROUTINESTUDIO", 12f))
+            addView(text(if (!hasEditor && !canShowActivation) "ROUTINESTUDIO · SICHERE VORSCHAU" else "ROUTINESTUDIO", 12f))
             addView(text("Deine Routinen", 26f, true))
-            addView(text(if (onCreateRoutine == null && onEditRoutine == null) "Dieser Stand liest den bestehenden Wochenplan. Er verändert keine Routine und erzeugt keine neue Planung." else "Routinen erstellen und bearbeiten. Speichern pausiert die Routine.", 14f))
+            addView(text(if (!hasEditor && !canShowActivation) "Dieser Stand liest den bestehenden Wochenplan. Er verändert keine Routine und erzeugt keine neue Planung." else if (hasEditor) "Routinen erstellen und bearbeiten. Speichern pausiert die Routine." else "Gespeicherte Routine ausdrücklich aktivieren.", 14f))
             onCreateRoutine?.let { create -> addView(R52Button(context, "Neue Routine", colors).apply { tag = "studio_create"; setOnClickListener { create() } }) }
         })
 
@@ -92,14 +100,38 @@ class StudioScreenView(
 
         state.selected?.let { detail ->
             addView(card().apply {
-                addView(text(if (onEditRoutine == null) detail.authorityLabel else "Routine bearbeiten", 12f, true))
+                addView(text(if (onEditRoutine != null) "Routine bearbeiten" else if (canShowActivation) "Gespeicherte Routine" else detail.authorityLabel, 12f, true))
                 addView(text(detail.title, 24f, true))
                 addView(text("${detail.timeLabel} · ${detail.daysLabel}"))
                 addView(text("${detail.categoryLabel} · ${detail.modeLabel} · ${detail.statusLabel}", 14f))
                 addView(text("Gesprochener Text", 14f, true))
                 addView(text(detail.spokenText, 14f))
-                if (onEditRoutine == null) addView(text(detail.detail, 14f))
-                else addView(R52Button(context, "Bearbeiten", colors).apply { tag = "studio_edit"; setOnClickListener { onEditRoutine(detail.id) } })
+                if (onEditRoutine == null && !canShowActivation) addView(text(detail.detail, 14f))
+                onEditRoutine?.let { edit ->
+                    addView(R52Button(context, "Bearbeiten", colors).apply {
+                        tag = "studio_edit"; setOnClickListener { edit(detail.id) }
+                    })
+                }
+                if (canShowActivation) {
+                    addView(text("Aktivieren beauftragt die Planung. Eine Ausgabe ist damit nicht bestätigt.", 14f))
+                    addView(R52Button(context, if (activationBusy) "Aktivierung angefragt" else "Routine aktivieren", colors).apply {
+                        tag = "studio_activate"
+                        layoutParams = LayoutParams(-1, -2)
+                        setSingleLine(false)
+                        ellipsize = null
+                        isEnabled = !activationBusy
+                        R52Accessibility.state(this, if (activationBusy) "Bitte warten" else "Bereit")
+                        setOnClickListener {
+                            // Immediate per-view double-tap guard; the host owns result/retry state.
+                            if (!isEnabled || activationBusy) return@setOnClickListener
+                            isEnabled = false
+                            this.text = "Aktivierung angefragt"
+                            contentDescription = this.text
+                            R52Accessibility.state(this, "Bitte warten")
+                            onActivateRoutine?.invoke(detail.id)
+                        }
+                    })
+                }
             })
         }
     }
