@@ -46,7 +46,25 @@ jobs:
           gradle-version: '8.9'
 
       - name: Unit-Tests, Lint und Debug-APK prüfen
-        run: gradle :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --continue --stacktrace
+        run: |
+          set -euo pipefail
+          diagnostics="${RUNNER_TEMP}/routinealarm-ci"
+          mkdir -p "$diagnostics"
+          cat > "$diagnostics/test-events.gradle" <<'GRADLE'
+          allprojects {
+              tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
+                  beforeTest { d ->
+                      logger.lifecycle("R52_TEST_START " + d.className + " :: " + d.name)
+                  }
+                  afterTest { d, r ->
+                      logger.lifecycle("R52_TEST_END " + d.className + " :: " + d.name + " = " + r.resultType)
+                  }
+              }
+          }
+          GRADLE
+          timeout --signal=TERM --kill-after=30s 15m gradle \
+              -I "$diagnostics/test-events.gradle" \
+              :app:testDebugUnitTest :app:lintDebug :app:assembleDebug --continue --stacktrace
 
       - name: Test- und Lintberichte hochladen
         if: always()
