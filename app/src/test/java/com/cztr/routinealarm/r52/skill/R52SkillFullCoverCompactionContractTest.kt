@@ -65,4 +65,33 @@ class R52SkillFullCoverCompactionContractTest {
         assertEquals(emptySet<String>(), plan.uncoveredCapabilities)
         assertEquals(setOf("X", "Y"), plan.selected.map { it.descriptor.id }.toSet())
     }
+
+    @Test fun exactCompactionReducesFiveSkillsToFour() {
+        val registry = SkillRegistry(authority)
+        add(registry, "a", setOf("c0", "c1"))
+        add(registry, "b", setOf("c2", "c3"))
+        add(registry, "c", setOf("c4", "c5"))
+        add(registry, "d", setOf("c6"))
+        add(registry, "t", setOf("c0", "c2", "c4"))
+        val request = SkillRequest(setOf("task"), (0..6).map { "c$it" }.toSet())
+        val plan = SkillRouter(registry).compose(request, maxSkills = 5)
+        assertEquals(emptySet<String>(), plan.uncoveredCapabilities)
+        assertEquals(setOf("a", "b", "c", "d"), plan.selected.map { it.descriptor.id }.toSet())
+        assertEquals(4, plan.selected.size)
+    }
+
+    @Test fun exactCompactionIncludesTwelveEligibleRootsWithoutMissingTheSmallerPlan() {
+        val registry = SkillRegistry(authority)
+        add(registry, "a", setOf("c0", "c1"))
+        add(registry, "b", setOf("c2", "c3"))
+        add(registry, "c", setOf("c4", "c5"))
+        add(registry, "d", setOf("c6"))
+        add(registry, "t", setOf("c0", "c2", "c4"))
+        repeat(7) { add(registry, "inert$it", emptySet()) }
+        val request = SkillRequest(setOf("task"), (0..6).map { "c$it" }.toSet())
+        val plan = SkillRouter(registry).compose(request, maxSkills = 5)
+        assertEquals(emptySet<String>(), plan.uncoveredCapabilities)
+        assertEquals(setOf("a", "b", "c", "d"), plan.selected.map { it.descriptor.id }.toSet())
+        assertEquals(4, plan.selected.size)
+    }
 }

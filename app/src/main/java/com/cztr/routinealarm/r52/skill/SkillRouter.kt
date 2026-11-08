@@ -180,6 +180,29 @@ class SkillRouter(private val registry: SkillRegistry) {
                 }
             }
         }
+        // C031: bounded exact compaction closes the remaining 5->4 gap.
+        // Only a small registry (<=12 eligible roots) can enter this branch;
+        // all previous one-, two- and three-root checks already ran.
+        // Subset exploration is advisory and can only replace a complete plan
+        // with a strictly smaller complete plan. Never authorizes execution.
+        if (best.selected.size > 4 && closures.size <= EXACT_COMPACT_ROOT_LIMIT) {
+            val orders = closures.map { it.second }
+            for (mask in 1 until (1 shl orders.size)) {
+                if (Integer.bitCount(mask) >= best.selected.size) continue
+                val seen = mutableSetOf<String>()
+                val combined = mutableListOf<SkillDescriptor>()
+                for (i in orders.indices) {
+                    if ((mask and (1 shl i)) == 0) continue
+                    for (descriptor in orders[i]) {
+                        if (seen.add(descriptor.id)) combined += descriptor
+                    }
+                }
+                proposal(combined)?.let { best = it }
+                // All three-root combinations have been checked for this
+                // small registry, so 4 is the shortest remaining solution.
+                if (best.selected.size == 4) return best
+            }
+        }
         return best
     }
 
@@ -299,6 +322,7 @@ class SkillRouter(private val registry: SkillRegistry) {
         const val LOOKAHEAD_ROOT_LIMIT = 128
         const val COMPACT_ROOT_LIMIT = 32
         const val TRIPLE_ROOT_LIMIT = 16
+        const val EXACT_COMPACT_ROOT_LIMIT = 12
         const val LOOKAHEAD_BEAM_WIDTH = 64
     }
 }
