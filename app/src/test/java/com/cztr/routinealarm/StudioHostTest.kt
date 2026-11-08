@@ -25,7 +25,7 @@ class StudioHostTest {
  private val app get()=RuntimeEnvironment.getApplication()
  private fun all(v:View):List<View> = listOf(v)+if(v is ViewGroup)(0 until v.childCount).flatMap{all(v.getChildAt(it))}else emptyList()
  private fun button(a:MainActivity,tag:String)=all(a.window.decorView).filterIsInstance<Button>().firstOrNull{it.tag==tag}
- private fun waitFor(check:()->Boolean){val until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(8);while(!check()&&System.nanoTime()<until){shadowOf(Looper.getMainLooper()).idle();Thread.sleep(5)};assertTrue("UI operation did not finish",check())}
+ private fun waitFor(check:()->Boolean){val until=System.nanoTime()+java.util.concurrent.TimeUnit.SECONDS.toNanos(8);while(!check()&&System.nanoTime()<until){shadowOf(Looper.getMainLooper()).runOneTask();Thread.sleep(5)};assertTrue("UI operation did not finish",check())}
  private fun studio(a:MainActivity){all(a.window.decorView).filterIsInstance<com.cztr.routinealarm.ui.components.R52BottomNav>().single().let{nav->all(nav).filterIsInstance<Button>().single{it.text=="Studio"}.performClick()};waitFor{button(a,"studio_create")!=null}}
  private fun editor(a:MainActivity)=all(a.window.decorView).filterIsInstance<StudioEditorView>().single()
  private fun field(a:MainActivity,k:String)=all(editor(a)).filterIsInstance<EditText>().single{it.tag==k}
@@ -63,5 +63,16 @@ class StudioHostTest {
    button(c.get(),"studio_save")!!.performClick();waitFor{all(c.get().window.decorView).filterIsInstance<TextView>().any{it.text.contains("zwischenzeitlich")}}
    assertEquals("Neuer Stand",records().single().event.title);assertEquals(1L,records().single().version);assertEquals("Alter Entwurf",field(c.get(),"title").text.toString());assertFalse(button(c.get(),"studio_save")!!.isEnabled)
   }finally{close(c)}
+ }
+
+ @Test fun waitForReturnsWhenReadyDespiteSelfRepostingCallbacks(){
+  val handler=android.os.Handler(Looper.getMainLooper())
+  val stopped=java.util.concurrent.atomic.AtomicBoolean(false)
+  val calls=java.util.concurrent.atomic.AtomicInteger(0)
+  val callback=object:Runnable{override fun run(){calls.incrementAndGet();if(!stopped.get())handler.post(this)}}
+  val escape=Thread({try{Thread.sleep(10000);stopped.set(true)}catch(_:InterruptedException){}},"test-queue-bounded-escape").apply{isDaemon=true}
+  val started=System.nanoTime();handler.post(callback);escape.start()
+  try{waitFor{calls.get()>=3};assertTrue("Satisfied condition must return inside original8s bound",System.nanoTime()-started<java.util.concurrent.TimeUnit.SECONDS.toNanos(8))}
+  finally{stopped.set(true);handler.removeCallbacks(callback);escape.interrupt()}
  }
 }
