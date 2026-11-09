@@ -35,24 +35,36 @@ class SkillRouter(private val registry: SkillRegistry) {
         val visiting = mutableSetOf<String>()
         val completed = mutableSetOf<String>()
         val order = mutableListOf<SkillDescriptor>()
+        // Each frame represents a dependency still being inspected. Iterative postorder
+        // preserves deterministic topological ordering without consuming the JVM call stack.
+        data class Frame(val descriptor: SkillDescriptor, val remaining: Iterator<String>)
+        val frames = java.util.ArrayDeque<Frame>()
 
-        fun visit(id: String): Boolean {
+        fun enter(id: String): Boolean {
             if (id in completed) return true
-            if (id in visiting) return false
+            if (id in visiting) return false // dependency cycle
             if (id in request.excludedSkillIds) return false
             val descriptor = registry.get(id) ?: return false
             if (!descriptor.state.isAtLeast(minState)) return false
             if (descriptor.negativeTriggers.normalized().any(tokens::contains)) return false
             visiting += id
-            for (dependency in descriptor.dependencies.sorted()) {
-                if (!visit(dependency)) return false
-            }
-            visiting -= id
-            completed += id
-            order += descriptor
+            frames.addLast(Frame(descriptor, descriptor.dependencies.sorted().iterator()))
             return true
         }
-        return if (visit(root.id)) order else null
+
+        if (!enter(root.id)) return null
+        while (frames.isNotEmpty()) {
+            val frame = frames.peekLast()!!
+            if (frame.remaining.hasNext()) {
+                if (!enter(frame.remaining.next())) return null
+            } else {
+                frames.removeLast()
+                visiting -= frame.descriptor.id
+                completed += frame.descriptor.id
+                order += frame.descriptor
+            }
+        }
+        return order
     }
 
     fun rank(
@@ -69,12 +81,13 @@ class SkillRouter(private val registry: SkillRegistry) {
             .mapNotNull { descriptor ->
                 val negative = descriptor.negativeTriggers.normalized()
                 if (negative.any(tokens::contains)) return@mapNotNull null
-                if (executableOrder(descriptor, request, minState) == null) return@mapNotNull null
-
                 val positiveMatches = descriptor.positiveTriggers.normalized().intersect(tokens)
                 val capabilityMatches = descriptor.capabilities.normalized().intersect(requiredCapabilities)
                 val score = positiveMatches.size * TRIGGER_WEIGHT + capabilityMatches.size * CAPABILITY_WEIGHT
+                // A zero-score root can never appear in rank's output. Avoid traversing
+                // its dependency closure; keep full fail-closed validation for all scored roots.
                 if (score <= 0) return@mapNotNull null
+                if (executableOrder(descriptor, request, minState) == null) return@mapNotNull null
 
                 SkillCandidate(
                     descriptor = descriptor,
