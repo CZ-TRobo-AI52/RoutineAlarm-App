@@ -53,6 +53,7 @@ jobs:
           cat > "$diagnostics/test-events.gradle" <<'GRADLE'
           allprojects {
               tasks.withType(org.gradle.api.tasks.testing.Test).configureEach {
+                  testLogging { showStandardStreams = true }
                   beforeTest { d ->
                       logger.lifecycle("R52_TEST_START " + d.className + " :: " + d.name)
                   }

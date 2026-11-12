@@ -55,14 +55,26 @@ class StudioHostTest {
   }finally{close(c)}
  }
  @Test fun staleEditorCannotOverwriteNewerDefinition(){
+  println("R52_PHASE stale:before_setup")
+  val probeDone=java.util.concurrent.atomic.AtomicBoolean(false)
+  val watch=Thread({
+   try { Thread.sleep(20000)
+    if(!probeDone.get()) {
+     println("R52_THREAD_DUMP_BEGIN stale")
+     Thread.getAllStackTraces().forEach { (t,stack)->println("THREAD "+t.name+" "+t.state+"\n"+stack.joinToString("\n")) }
+     println("R52_THREAD_DUMP_END stale")
+    }
+   } catch(_:InterruptedException) {}
+  },"r52-stale-diagnostic").apply {isDaemon=true;start()}
   val c=Robolectric.buildActivity(MainActivity::class.java).setup()
+  println("R52_PHASE stale:after_setup")
   try{
-   studio(c.get());button(c.get(),"studio_create")!!.performClick();waitFor{all(c.get().window.decorView).any{it is StudioEditorView}};fill(c.get(),"Alter Entwurf")
-   val d=editor(c.get()).currentDraft()
-   onRoutineStorage{SqliteOccurrenceRepository(app,Clock.systemDefaultZone()).use{r->r.savePersonalRoutine(PersonalRoutineSaveRequest("other-writer",d.event().copy(title="Neuer Stand"),0,0,d.expectedRestoreEpoch))}}
-   button(c.get(),"studio_save")!!.performClick();waitFor{all(c.get().window.decorView).filterIsInstance<TextView>().any{it.text.contains("zwischenzeitlich")}}
-   assertEquals("Neuer Stand",records().single().event.title);assertEquals(1L,records().single().version);assertEquals("Alter Entwurf",field(c.get(),"title").text.toString());assertFalse(button(c.get(),"studio_save")!!.isEnabled)
-  }finally{close(c)}
+   println("R52_PHASE stale:before_studio");studio(c.get());button(c.get(),"studio_create")!!.performClick();waitFor{all(c.get().window.decorView).any{it is StudioEditorView}};fill(c.get(),"Alter Entwurf")
+   println("R52_PHASE stale:editor_ready");val d=editor(c.get()).currentDraft()
+   println("R52_PHASE stale:before_other_writer");onRoutineStorage{SqliteOccurrenceRepository(app,Clock.systemDefaultZone()).use{r->r.savePersonalRoutine(PersonalRoutineSaveRequest("other-writer",d.event().copy(title="Neuer Stand"),0,0,d.expectedRestoreEpoch))}}
+   println("R52_PHASE stale:after_other_writer");button(c.get(),"studio_save")!!.performClick();waitFor{all(c.get().window.decorView).filterIsInstance<TextView>().any{it.text.contains("zwischenzeitlich")}}
+   println("R52_PHASE stale:conflict_visible");assertEquals("Neuer Stand",records().single().event.title);assertEquals(1L,records().single().version);assertEquals("Alter Entwurf",field(c.get(),"title").text.toString());assertFalse(button(c.get(),"studio_save")!!.isEnabled)
+  }finally{println("R52_PHASE stale:before_close");try{close(c);println("R52_PHASE stale:after_close")}finally{probeDone.set(true);watch.interrupt()}}
  }
 
  @Test fun waitForReturnsWhenReadyDespiteSelfRepostingCallbacks(){
