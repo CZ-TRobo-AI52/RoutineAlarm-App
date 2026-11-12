@@ -54,6 +54,7 @@ class MainShellNavigationTest {
 
     @Test fun planNavigationKeepsWeeklyPlanPausedAndHidesUnrelatedTestCard() = withMain { a ->
         destination(a, "Plan").performClick()
+        awaitUi(a)
         assertTrue(labels(a).contains("Woche"))
         assertFalse(labels(a).contains("TESTWECKER"))
         assertFalse(ScheduleState.isEnabled(a))
@@ -64,6 +65,7 @@ class MainShellNavigationTest {
         val saved = Bundle()
         withMain { a ->
             destination(a, "Plan").performClick()
+            awaitUi(a)
             views(a.window.decorView).single { it.contentDescription == "Mittwoch auswählen" }.performClick()
             a.javaClass.getDeclaredMethod("onSaveInstanceState", Bundle::class.java).apply { isAccessible = true }.invoke(a, saved)
         }
@@ -90,6 +92,7 @@ class MainShellNavigationTest {
         val shell = views(a.window.decorView).single { it.tag == "r52_shell" }
         assertEquals(Color.parseColor("#F5F8FB"), (shell.background as ColorDrawable).color)
         destination(a, "Heute").performClick()
+        awaitUi(a)
         assertTrue(labels(a).contains("Wochenplan pausiert"))
         assertFalse(ScheduleState.isEnabled(a))
     }

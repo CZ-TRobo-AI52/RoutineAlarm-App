@@ -65,7 +65,7 @@ class AsyncTestAlarmUiTest {
     }
 
     @After fun cleanup() {
-        val executors = activities.mapNotNull { readExecutor(it.get()) }
+        val executors = activities.flatMap { readExecutors(it.get()) }
         activities.forEach { it.destroy() }
         UiReadDatabaseGate.releaseAll()
         executors.forEach { assertTrue("UI reader did not stop", it.awaitTermination(10, TimeUnit.SECONDS)) }
@@ -152,11 +152,12 @@ class AsyncTestAlarmUiTest {
         val controller = main().start()
         assertOffMain()
         gate.awaitEntered()
-        val executor = requireNotNull(readExecutor(controller.get()))
+        val executors = readExecutors(controller.get())
+        assertTrue("Main activity has no readers", executors.isNotEmpty())
         controller.stop()
         val stoppedUi = labels(controller.get())
         gate.release.countDown()
-        executor.submit {}.get(10, TimeUnit.SECONDS)
+        executors.forEach { it.submit {}.get(10, TimeUnit.SECONDS) }
         shadowOf(Looper.getMainLooper()).idle()
         assertEquals("Stopped screen received a late status result", stoppedUi, labels(controller.get()))
         assertFalse(labels(controller.get()).contains("1 offener Testwecker"))
@@ -182,11 +183,15 @@ class AsyncTestAlarmUiTest {
 
     @Test fun mainReadFailureIsDisplayedAsUnavailableInsteadOfAnEmptyStore() {
         fixture("unavailable-main")
+        // Both independent real readers fail; arrival order must not choose the assertion target.
         val gate = UiReadDatabaseGate.failNext()
+        val catalogGate = UiReadDatabaseGate.failNext()
         val controller = main()
         assertOffMain()
         gate.awaitEntered()
+        catalogGate.awaitEntered()
         awaitUi { labels(controller.get()).contains("Teststatus nicht verfügbar") }
+        awaitUi { labels(controller.get()).contains("Gespeicherte Routinen konnten nicht geladen werden.") }
         assertFalse(labels(controller.get()).contains("Keine offenen Testwecker"))
     }
 
@@ -255,17 +260,17 @@ class AsyncTestAlarmUiTest {
     }
 
     /** Test-only barrier/termination access, following the existing recovery executor tests. */
-    private fun readExecutor(activity: Activity): ExecutorService? {
-        val field = activity.javaClass.declaredFields.firstOrNull { it.type.simpleName == "LatestUiLoader" }
-            ?: return null
-        field.isAccessible = true
-        val loader = field.get(activity) ?: return null
-        val executor = loader.javaClass.declaredFields.firstOrNull {
-            ExecutorService::class.java.isAssignableFrom(it.type)
-        } ?: return null
-        executor.isAccessible = true
-        return executor.get(loader) as ExecutorService
-    }
+    private fun readExecutor(activity: Activity): ExecutorService? = readExecutors(activity).firstOrNull()
+    private fun readExecutors(activity: Activity): List<ExecutorService> = activity.javaClass.declaredFields
+        .filter { it.type.simpleName == "LatestUiLoader" }.mapNotNull { field ->
+            field.isAccessible = true
+            val loader = field.get(activity) ?: return@mapNotNull null
+            val executor = loader.javaClass.declaredFields.firstOrNull {
+                ExecutorService::class.java.isAssignableFrom(it.type)
+            } ?: return@mapNotNull null
+            executor.isAccessible = true
+            executor.get(loader) as ExecutorService
+        }
 
     private fun labels(activity: Activity) = views(activity.window.decorView)
         .filterIsInstance<TextView>().map { it.text.toString() }

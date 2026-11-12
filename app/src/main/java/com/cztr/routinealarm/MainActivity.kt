@@ -44,6 +44,7 @@ class MainActivity : Activity() {
     private val colors get() = navigation.colors(resources.configuration)
 
     private val german = Locale.GERMAN
+    private val routineCatalogLoader = com.cztr.routinealarm.execution.LatestUiLoader()
     private val testStatusLoader = com.cztr.routinealarm.execution.LatestUiLoader()
 
     private var selectedDay: DayOfWeek =
@@ -154,6 +155,7 @@ class MainActivity : Activity() {
         weeklyUiVisible = false
         ScheduleState.unobserve(this, weeklyObserver)
         testStatusLoader.invalidate()
+        routineCatalogLoader.invalidate()
         super.onStop()
     }
 
@@ -171,12 +173,14 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         ScheduleState.unobserve(this, weeklyObserver)
         testStatusLoader.close()
+        routineCatalogLoader.close()
         studioIo.close()
         super.onDestroy()
     }
 
     private fun render() {
         studioRenderGeneration++
+        routineCatalogLoader.invalidate()
         testStatusLoader.invalidate()
         studioIo.invalidate()
         val root = LinearLayout(this).apply {
@@ -186,67 +190,9 @@ class MainActivity : Activity() {
         addHeader(root)
         ScheduleState.writeNotice(this)?.let { root.addView(secondaryText(it)) }
         when (navigation.destination) {
-            AppDestination.TODAY -> {
-                val homeInput = com.cztr.routinealarm.ui.home.HomeProjectionSource.from(
-                    ZonedDateTime.now(), ScheduleState.isEnabled(this),
-                    AlarmScheduler.canScheduleExact(this), ScheduleRegistry.scheduledEvents)
-                val home = com.cztr.routinealarm.ui.home.HomeUiMapper.map(homeInput)
-                root.addView(com.cztr.routinealarm.ui.home.HomeScreenView(this, home, colors) { action ->
-                    when (action) {
-                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_PLAN,
-                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_TRAINING -> {
-                            navigation.destination = AppDestination.PLAN
-                            render()
-                        }
-                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_HISTORY -> openTestHistory()
-                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_BACKUP -> startActivity(
-                            Intent(this, com.cztr.routinealarm.backup.BackupActivity::class.java))
-                        com.cztr.routinealarm.ui.home.HomeQuickAction.REFRESH -> render()
-                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_TEST,
-                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_SYSTEM -> {
-                            navigation.destination = AppDestination.MORE
-                            render()
-                        }
-                    }
-                })
-                addTestAlarmCard(root)
-            }
-            AppDestination.PLAN -> {
-                val planInput = com.cztr.routinealarm.ui.plan.PlanProjectionSource.from(
-                    planEnabled = ScheduleState.isEnabled(this),
-                    exactAllowed = AlarmScheduler.canScheduleExact(this),
-                    activeEventCount = ScheduleRegistry.enabledEvents.size,
-                    selectedDay = selectedDay,
-                    events = PersonalSchedule.allEvents,
-                    training = TrainingSessionPlan.eventsFor(selectedDay),
-                    showTrainingDetails = showTrainingDetails,
-                )
-                val plan = com.cztr.routinealarm.ui.plan.PlanUiMapper.map(planInput)
-                root.addView(com.cztr.routinealarm.ui.plan.PlanScreenView(
-                    this,
-                    plan,
-                    colors,
-                    onPrimaryAction = {
-                        if (plan.availability == com.cztr.routinealarm.ui.plan.PlanAvailability.PERMISSION_REQUIRED) {
-                            navigation.destination = AppDestination.MORE
-                            render()
-                        } else if (ScheduleState.requestedEnabled(this)) {
-                            disableSchedule()
-                        } else {
-                            enableScheduleFromPlan()
-                        }
-                    },
-                    onSelectDay = { day ->
-                        selectedDay = day
-                        showTrainingDetails = false
-                        render()
-                    },
-                    onToggleTraining = {
-                        showTrainingDetails = !showTrainingDetails
-                        render()
-                    },
-                    requestedEnabled = ScheduleState.requestedEnabled(this),
-                ))
+            AppDestination.TODAY, AppDestination.PLAN -> {
+                addRoutineSurface(root)
+                if (navigation.destination == AppDestination.TODAY) addTestAlarmCard(root)
             }
             AppDestination.STUDIO -> addStudio(root)
             AppDestination.HISTORY -> addHistoryScreen(root)
@@ -296,6 +242,104 @@ class MainActivity : Activity() {
         })
     }
 
+
+
+    /** One immutable stored catalog per render; reads never grant scheduling authority. */
+    private fun addRoutineSurface(root: LinearLayout) {
+        val destination = navigation.destination
+        val day = selectedDay
+        val generation = studioRenderGeneration
+        val trainingDetails = showTrainingDetails
+        val requestedAt = ZonedDateTime.now()
+        val planEnabled = ScheduleState.isEnabled(this)
+        val requestedEnabled = ScheduleState.requestedEnabled(this)
+        val exactAllowed = AlarmScheduler.canScheduleExact(this)
+        fun isCurrent() = weeklyUiVisible && !isFinishing && !isDestroyed &&
+            studioRenderGeneration == generation && navigation.destination == destination && selectedDay == day
+        val target = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(target)
+        target.addView(secondaryText("Routinen werden geladen …"))
+        routineCatalogLoader.load({ ScheduleRegistry.load(applicationContext) }) { result ->
+            if (!isCurrent()) return@load
+            target.removeAllViews()
+            result.fold(onSuccess = { snapshot ->
+                when (destination) {
+                    AppDestination.TODAY -> {
+                val homeInput = com.cztr.routinealarm.ui.home.HomeProjectionSource.from(
+                    requestedAt, planEnabled,
+                    exactAllowed, snapshot.scheduledEvents)
+                val home = com.cztr.routinealarm.ui.home.HomeUiMapper.map(homeInput)
+                target.addView(com.cztr.routinealarm.ui.home.HomeScreenView(this, home, colors) { action ->
+                    if (isCurrent()) when (action) {
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_PLAN,
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_TRAINING -> {
+                            navigation.destination = AppDestination.PLAN
+                            render()
+                        }
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_HISTORY -> openTestHistory()
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_BACKUP -> startActivity(
+                            Intent(this, com.cztr.routinealarm.backup.BackupActivity::class.java))
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.REFRESH -> render()
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_TEST,
+                        com.cztr.routinealarm.ui.home.HomeQuickAction.OPEN_SYSTEM -> {
+                            navigation.destination = AppDestination.MORE
+                            render()
+                        }
+                    }
+                })
+
+                    }
+                    AppDestination.PLAN -> {
+                val planInput = com.cztr.routinealarm.ui.plan.PlanProjectionSource.from(
+                    planEnabled = planEnabled,
+                    exactAllowed = exactAllowed,
+                    activeEventCount = snapshot.scheduledEvents.count { it.enabled },
+                    selectedDay = day,
+                    events = snapshot.scheduledEvents.filterNot { TrainingSessionPlan.isStartEvent(it.id) },
+                    training = TrainingSessionPlan.eventsFor(day),
+                    showTrainingDetails = trainingDetails,
+                    storedEventIds = snapshot.definitions.filterValues { !it.quarantined }.keys,
+                )
+                val plan = com.cztr.routinealarm.ui.plan.PlanUiMapper.map(planInput)
+                target.addView(com.cztr.routinealarm.ui.plan.PlanScreenView(
+                    this,
+                    plan,
+                    colors,
+                    onPrimaryAction = primary@ {
+                        if (!isCurrent()) return@primary
+                        if (plan.availability == com.cztr.routinealarm.ui.plan.PlanAvailability.PERMISSION_REQUIRED) {
+                            navigation.destination = AppDestination.MORE
+                            render()
+                        } else if (ScheduleState.requestedEnabled(this)) {
+                            disableSchedule()
+                        } else {
+                            enableScheduleFromPlan()
+                        }
+                    },
+                    onSelectDay = changeDay@ { day ->
+                        if (!isCurrent()) return@changeDay
+                        selectedDay = day
+                        showTrainingDetails = false
+                        render()
+                    },
+                    onToggleTraining = toggle@ {
+                        if (!isCurrent()) return@toggle
+                        showTrainingDetails = !showTrainingDetails
+                        render()
+                    },
+                    requestedEnabled = requestedEnabled,
+                ))
+                    }
+                    else -> Unit
+                }
+            }, onFailure = {
+                target.addView(secondaryText("Gespeicherte Routinen konnten nicht geladen werden."))
+                target.addView(R52Button(this, "Erneut laden", colors).apply {
+                    setOnClickListener { if (isCurrent()) render() }
+                })
+            })
+        }
+    }
 
     /** Catalog reads are snapshots on the existing UI I/O worker, never authority from static rows. */
     private fun addStudio(root: LinearLayout) {

@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
 /** Wait for the real worker response; advancing Robolectric's main queue alone is insufficient. */
 fun awaitUi(activity: Activity) {
     val pending = setOf("Teststatus wird geladen …", "Testverlauf wird geladen …", "Testwecker wird geprüft …",
-        "Speicherung wird geprüft …")
+        "Speicherung wird geprüft …", "Routinen werden geladen …")
     val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
     while (System.nanoTime() < deadline) {
         shadowOf(Looper.getMainLooper()).idle()

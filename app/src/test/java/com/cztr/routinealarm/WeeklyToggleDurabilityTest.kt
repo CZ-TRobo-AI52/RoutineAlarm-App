@@ -78,8 +78,11 @@ class WeeklyToggleDurabilityTest {
         (0 until v.childCount).flatMap { views(v.getChildAt(it)) } else emptyList()
     // Exercise the current Plan action, including its actual rendered requested state.
     private fun toggle(a: Activity) = object {
-        private fun button() = views(a.window.decorView).filterIsInstance<Button>()
-            .single { it.tag == "plan_primary_action" }
+        private fun button(): Button {
+            com.cztr.routinealarm.support.awaitUi(a)
+            return views(a.window.decorView).filterIsInstance<Button>()
+                .single { it.tag == "plan_primary_action" }
+        }
         var isChecked: Boolean
             get() = button().isSelected
             set(enabled) { if (isChecked != enabled) assertTrue(button().performClick()) }
@@ -89,6 +92,7 @@ class WeeklyToggleDurabilityTest {
         val nav = views(a.window.decorView)
             .filterIsInstance<com.cztr.routinealarm.ui.components.R52BottomNav>().single()
         views(nav).filterIsInstance<Button>().single { it.text == "Plan" }.performClick()
+        com.cztr.routinealarm.support.awaitUi(a)
     }
     private fun withMain(check: (org.robolectric.android.controller.ActivityController<MainActivity>) -> Unit) {
         val c = Robolectric.buildActivity(MainActivity::class.java).create().start().resume()
@@ -264,6 +268,7 @@ class WeeklyToggleDurabilityTest {
                     assertTrue(labels(successor!!.get()).any { it.contains("Änderung wird gespeichert") })
                 }
                 val current = successor!!.get()
+                com.cztr.routinealarm.support.awaitUi(current)
                 assertFalse("P2_RED: successor retained pending after completion",
                     labels(current).any { it.contains("Änderung wird gespeichert") })
                 if (failure) {

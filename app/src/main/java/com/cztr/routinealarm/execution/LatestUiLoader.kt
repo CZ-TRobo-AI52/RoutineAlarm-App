@@ -21,13 +21,19 @@ internal class LatestUiLoader(
     fun <T> load(read: () -> T, show: (Result<T>) -> Unit) {
         if (closed.get()) return
         val request = generation.incrementAndGet()
-        worker.execute {
-            if (closed.get() || generation.get() != request) return@execute
-            val result = try { Result.success(read()) }
-                catch (error: Exception) { Result.failure(error) }
-            callbacks.execute {
-                if (!closed.get() && generation.get() == request) show(result)
+        try {
+            worker.execute {
+                if (closed.get() || generation.get() != request) return@execute
+                val result = try { Result.success(read()) }
+                    catch (error: Exception) { Result.failure(error) }
+                callbacks.execute {
+                    if (!closed.get() && generation.get() == request) show(result)
+                }
             }
+        } catch (error: RejectedExecutionException) {
+            // close() can shut the worker down between the guard and execute().
+            // Do not hide unrelated rejections while the screen is still open.
+            if (!closed.get()) throw error
         }
     }
 

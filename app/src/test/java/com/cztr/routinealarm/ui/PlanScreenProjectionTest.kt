@@ -38,8 +38,10 @@ class PlanScreenProjectionTest {
 
     @Test fun selectingAnotherDayOnlyChangesTheProjection() = withMain { activity ->
         destination(activity, "Plan").performClick()
+        awaitUi(activity)
         val dayButton = views(activity.window.decorView).single { it.contentDescription == "Dienstag auswählen" }
         dayButton.performClick()
+        awaitUi(activity)
 
         assertTrue(target(activity, "Dienstag auswählen").isSelected)
         assertFalse(ScheduleState.isEnabled(activity))
@@ -48,6 +50,7 @@ class PlanScreenProjectionTest {
 
     @Test fun pausedPlanUsesExplicitActionAndDoesNotClaimExecution() = withMain { activity ->
         destination(activity, "Plan").performClick()
+        awaitUi(activity)
 
         assertTrue(labels(activity).contains("Wochenplan pausiert"))
         assertTrue(buttons(activity).any { it.text == "Wochenplan aktivieren" })
@@ -60,6 +63,7 @@ class PlanScreenProjectionTest {
         try {
             withMain { activity ->
                 destination(activity, "Plan").performClick()
+        awaitUi(activity)
                 val action = buttons(activity).single { it.text == "Wochenplan aktivieren" }
                 assertTrue(action.minimumHeight >= (48 * activity.resources.displayMetrics.density).toInt())
                 assertNull(action.ellipsize)

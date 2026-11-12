@@ -39,9 +39,11 @@ object PlanUiMapper {
                 .replaceFirstChar { it.titlecase(german) }, day == input.selectedDay)
         }
         val events = input.events.asSequence()
-            .filter { it.enabled && input.selectedDay in it.days }
+            .filter { (it.enabled || it.id in input.storedEventIds) && input.selectedDay in it.days }
             .sortedWith(compareBy({ it.minuteOfDay }, { it.id }))
-            .map(::toUi)
+            .map { item -> toUi(item).let { row ->
+                if (item.enabled) row else row.copy(categoryLabel = row.categoryLabel + " · Pausiert")
+            } }
             .toList()
         val training = input.training.asSequence()
             .filter { it.enabled }

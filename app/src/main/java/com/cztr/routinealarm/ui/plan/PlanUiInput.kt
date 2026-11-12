@@ -21,6 +21,7 @@ data class PlanUiInput(
     val events: List<PlanProjectedItem>,
     val training: List<PlanProjectedItem>,
     val showTrainingDetails: Boolean,
+    val storedEventIds: Set<String> = emptySet(),
 )
 
 /** Domain adapter only. It projects existing schedules and never mutates or schedules them. */
@@ -33,6 +34,7 @@ object PlanProjectionSource {
         events: List<RoutineEvent>,
         training: List<RoutineEvent>,
         showTrainingDetails: Boolean,
+        storedEventIds: Set<String> = emptySet(),
     ) = PlanUiInput(
         planEnabled = planEnabled,
         exactAllowed = exactAllowed,
@@ -41,6 +43,7 @@ object PlanProjectionSource {
         events = events.map(::project),
         training = training.map(::project),
         showTrainingDetails = showTrainingDetails,
+        storedEventIds = storedEventIds.toSet(),
     )
 
     private fun project(event: RoutineEvent) = PlanProjectedItem(
