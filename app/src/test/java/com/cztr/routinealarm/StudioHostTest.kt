@@ -66,7 +66,9 @@ class StudioHostTest {
     }
    } catch(_:InterruptedException) {}
   },"r52-stale-diagnostic").apply {isDaemon=true;start()}
-  val c=Robolectric.buildActivity(MainActivity::class.java).setup()
+  // Content/persistence host: retain lifecycle callbacks; window attachment/IME/touch are outside this test.
+  val c=Robolectric.buildActivity(MainActivity::class.java)
+   .create().start().postCreate(null).resume().topActivityResumed(true)
   println("R52_PHASE stale:after_setup")
   try{
    println("R52_PHASE stale:before_studio");studio(c.get());button(c.get(),"studio_create")!!.performClick();waitFor{all(c.get().window.decorView).any{it is StudioEditorView}};fill(c.get(),"Alter Entwurf")

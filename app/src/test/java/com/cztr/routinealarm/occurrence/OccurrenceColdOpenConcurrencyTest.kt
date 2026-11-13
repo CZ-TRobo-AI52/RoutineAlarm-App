@@ -89,7 +89,9 @@ class OccurrenceColdOpenConcurrencyTest {
 
     @Test fun closingOneRepositoryDoesNotCloseAnotherRepositoriesLiveTransaction() {
         val app = RuntimeEnvironment.getApplication()
-        val name = "lease-${UUID.randomUUID()}.db"
+        // Robolectric isolates each method directory. Keep the filename short
+        // so native SQLite WAL/SHM sidecars fit the Windows path limit.
+        val name = "lease.db"
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
         val writer = SqliteOccurrenceRepository(app, Clock.systemUTC(), name) {
