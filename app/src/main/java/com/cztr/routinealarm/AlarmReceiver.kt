@@ -4,6 +4,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 
 class AlarmReceiver : BroadcastReceiver() {
 
@@ -143,6 +147,11 @@ class AlarmReceiver : BroadcastReceiver() {
             Build.VERSION.SDK_INT >=
             Build.VERSION_CODES.O
         ) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                !AlarmScheduler.canScheduleExact(context)) {
+                postInexactAlarmFallback(context, title, spokenText)
+                return
+            }
             context.startForegroundService(
                 serviceIntent
             )
@@ -151,5 +160,52 @@ class AlarmReceiver : BroadcastReceiver() {
                 serviceIntent
             )
         }
+    }
+
+    private fun postInexactAlarmFallback(
+        context: Context,
+        title: String,
+        spokenText: String
+    ) {
+        val channelId = AlarmService.ROUTINE_CHANNEL_ID
+        val manager = context.getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            manager.getNotificationChannel(channelId) == null) {
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    channelId,
+                    "RoutineAlarm Wecker",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Wichtige RoutineAlarm Erinnerungen"
+                    lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+                    enableVibration(true)
+                }
+            )
+        }
+
+        val fullScreenIntent = Intent(context, AlarmActivity::class.java).apply {
+            putExtra(AlarmScheduler.EXTRA_TITLE, title)
+            putExtra(AlarmScheduler.EXTRA_SPOKEN_TEXT, spokenText)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val fullScreen = PendingIntent.getActivity(
+            context,
+            1002,
+            fullScreenIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = Notification.Builder(context, channelId)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+            .setContentTitle("RoutineAlarm")
+            .setContentText(title)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setCategory(Notification.CATEGORY_ALARM)
+            .setPriority(Notification.PRIORITY_MAX)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setFullScreenIntent(fullScreen, true)
+            .build()
+        manager.notify(AlarmService.NOTIFICATION_ID, notification)
     }
 }
