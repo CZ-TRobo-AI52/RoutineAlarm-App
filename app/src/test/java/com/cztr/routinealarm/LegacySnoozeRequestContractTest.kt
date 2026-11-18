@@ -180,6 +180,28 @@ class LegacySnoozeRequestContractTest {
         screen.pause().stop().destroy()
     }
 
+    @Test @Config(sdk = [31])
+    fun inexactOneShotUsesNotificationInsteadOfForegroundService() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(false)
+        val receiver = AlarmReceiver()
+        val intent = source()
+            .putExtra(AlarmScheduler.EXTRA_MODE, EventMode.ROUTINE.name)
+        val method = AlarmReceiver::class.java.getDeclaredMethod(
+            "receiveOnWorker",
+            Context::class.java,
+            Intent::class.java
+        ).apply { isAccessible = true }
+
+        method.invoke(receiver, context, intent)
+
+        assertNull("Inexact fallback must not start AlarmService", shadowOf(context).nextStartedService)
+        val notification = shadowOf(context.getSystemService(NotificationManager::class.java))
+            .getNotification(AlarmService.NOTIFICATION_ID)
+        assertNotNull("Inexact fallback must post an alarm notification", notification)
+        assertEquals(Notification.CATEGORY_ALARM, notification.category)
+        assertNotNull("Alarm notification must retain full-screen alarm UI", notification.fullScreenIntent)
+    }
+
     @Test fun permissionFallbackKeepsStableIdentity() {
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
         val prepared = requireNotNull(AlarmScheduler.prepareSnooze(context, "Fallback"))
