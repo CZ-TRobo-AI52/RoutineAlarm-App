@@ -157,6 +157,8 @@ class AlarmReceiver : BroadcastReceiver() {
                     serviceIntent
                 )
             } catch (exception: android.app.ForegroundServiceStartNotAllowedException) {
+                // The permission check above is a snapshot. The OS can still reject
+                // the launch because the exact-alarm exemption is no longer valid.
                 postInexactAlarmFallback(context, title, spokenText)
             }
         } else {
