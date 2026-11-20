@@ -4,6 +4,7 @@ package com.cztr.routinealarm
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.app.NotificationManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -44,11 +45,20 @@ class LegacySnoozeRequestContractTest {
             }
         }
     }
+    @Implements(Application::class)
+    class ThrowsForegroundServiceStartNotAllowed {
+        @Implementation
+        fun startForegroundService(service: Intent): ComponentName {
+            throw ForegroundServiceStartNotAllowedException("Synthetic background FGS rejection")
+        }
+    }
+
     private val context get() = RuntimeEnvironment.getApplication()
     private val manager get() = context.getSystemService(AlarmManager::class.java)
     @Before fun setup() {
         assertTrue(context.getSharedPreferences("routinealarm_schedule", Context.MODE_PRIVATE).edit().clear().commit())
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        context.getSystemService(NotificationManager::class.java).cancel(AlarmService.NOTIFICATION_ID)
     }
     @After fun cleanup() {
         shadowOf(manager).scheduledAlarms.toList().forEach { it.operation?.let { p -> manager.cancel(p); p.cancel() } }
@@ -200,6 +210,28 @@ class LegacySnoozeRequestContractTest {
         assertNotNull("Inexact fallback must post an alarm notification", notification)
         assertEquals(Notification.CATEGORY_ALARM, notification.category)
         assertNotNull("Alarm notification must retain full-screen alarm UI", notification.fullScreenIntent)
+    }
+
+    @Test @Config(sdk = [31], shadows = [ThrowsForegroundServiceStartNotAllowed::class])
+    fun foregroundServiceRejectionUsesNotificationFallback() {
+        ShadowAlarmManager.setCanScheduleExactAlarms(true)
+        val receiver = AlarmReceiver()
+        val intent = source()
+            .putExtra(AlarmScheduler.EXTRA_MODE, EventMode.ROUTINE.name)
+        val method = AlarmReceiver::class.java.getDeclaredMethod(
+            "receiveOnWorker",
+            Context::class.java,
+            Intent::class.java
+        ).apply { isAccessible = true }
+
+        method.invoke(receiver, context, intent)
+
+        assertNull("Rejected foreground service must not start AlarmService", shadowOf(context).nextStartedService)
+        val notification = shadowOf(context.getSystemService(NotificationManager::class.java))
+            .getNotification(AlarmService.NOTIFICATION_ID)
+        assertNotNull("FGS rejection must fall back to an alarm notification", notification)
+        assertEquals(Notification.CATEGORY_ALARM, notification.category)
+        assertNotNull("FGS rejection must retain full-screen alarm UI", notification.fullScreenIntent)
     }
 
     @Test fun permissionFallbackKeepsStableIdentity() {
