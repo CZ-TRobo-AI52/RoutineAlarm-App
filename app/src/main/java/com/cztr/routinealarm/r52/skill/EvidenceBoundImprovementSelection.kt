@@ -128,6 +128,8 @@ data class EvidenceBoundSelectionRequest(
     val datasetSha256: String,
     val baselineArtifactSha256: String,
     val minimumSamples: Int = 100,
+    /** Optional host-owned preregistration checked before any evidence is evaluated. */
+    val preregisteredScope: PreregisteredSelectionScope? = null,
 )
 
 /**
@@ -144,6 +146,7 @@ class EvidenceBoundImprovementSelector(
     private val expectedBaselineArtifactSha256: String,
     private val familywiseBudget: FamilywiseEvidenceBudget,
     private val minimumSamples: Int = 100,
+    private val preregisteredScope: PreregisteredSelectionScope? = null,
 ) {
     init {
         // Validation lives in the shared verifier so both admission and selection enforce one policy.
@@ -156,6 +159,15 @@ class EvidenceBoundImprovementSelector(
 
     fun chooseBest(skillIds: Collection<String>): EvidenceBoundImprovementDecision {
         val uniqueIds = skillIds.distinct().sorted()
+        val scopeFailure = validateScope(uniqueIds)
+        if (scopeFailure != null) {
+            return EvidenceBoundImprovementDecision(
+                winner = null,
+                accepted = emptyList(),
+                rejected = uniqueIds.associateWith { scopeFailure },
+                reason = scopeFailure,
+            )
+        }
         if (uniqueIds.size > familywiseBudget.registeredHypotheses) {
             return EvidenceBoundImprovementDecision(
                 winner = null, accepted = emptyList(),
@@ -184,6 +196,22 @@ class EvidenceBoundImprovementSelector(
             rejected = rejected.toMap(),
             reason = if (winner == null) "no_evidence_bound_positive_gain" else "highest_evidence_bound_roi",
         )
+    }
+
+    private fun validateScope(uniqueIds: List<String>): String? {
+        val scope = preregisteredScope ?: return null
+        if (!scope.validate()) return "selection_scope_integrity_failure"
+        if (scope.evaluationId != expectedEvaluationId ||
+            scope.datasetSha256 != expectedDatasetSha256 ||
+            scope.baselineArtifactSha256 != expectedBaselineArtifactSha256
+        ) return "selection_scope_benchmark_mismatch"
+        if (scope.registeredHypotheses != uniqueIds.size ||
+            scope.candidateSetSha256 != PreregisteredSelectionScope.canonicalCandidateSetSha256(uniqueIds)
+        ) return "selection_scope_candidate_set_mismatch"
+        if (scope.registeredHypotheses != familywiseBudget.registeredHypotheses) {
+            return "selection_scope_family_budget_mismatch"
+        }
+        return null
     }
 
     private fun evaluate(skillId: String): Pair<EvidenceBoundImprovement?, String> {
