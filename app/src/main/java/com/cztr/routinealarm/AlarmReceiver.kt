@@ -152,9 +152,13 @@ class AlarmReceiver : BroadcastReceiver() {
                 postInexactAlarmFallback(context, title, spokenText)
                 return
             }
-            context.startForegroundService(
-                serviceIntent
-            )
+            try {
+                context.startForegroundService(
+                    serviceIntent
+                )
+            } catch (exception: android.app.ForegroundServiceStartNotAllowedException) {
+                postInexactAlarmFallback(context, title, spokenText)
+            }
         } else {
             context.startService(
                 serviceIntent
