@@ -61,6 +61,7 @@ class R52SkillEngine(
         expectedBaselineArtifactSha256 = request.baselineArtifactSha256,
         familywiseBudget = familywiseBudget,
         minimumSamples = request.minimumSamples,
+        preregisteredScope = request.preregisteredScope,
     ).chooseBest(skillIds)
 
     fun descriptor(skillId: String): SkillDescriptor? = registry.get(skillId)
