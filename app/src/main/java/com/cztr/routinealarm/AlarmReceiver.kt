@@ -34,9 +34,16 @@ class AlarmReceiver : BroadcastReceiver() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             try {
                 context.startForegroundService(serviceIntent)
-            } catch (exception: ForegroundServiceStartNotAllowedException) {
-                // Exact-alarm access is a snapshot; the OS may still reject the FGS launch.
-                postInexactAlarmFallback(context, title)
+            } catch (exception: Exception) {
+                if (
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    exception is ForegroundServiceStartNotAllowedException
+                ) {
+                    // Exact-alarm access is a snapshot; the OS may still reject the FGS launch.
+                    postInexactAlarmFallback(context, title)
+                    return
+                }
+                throw exception
             }
         } else {
             context.startService(serviceIntent)
