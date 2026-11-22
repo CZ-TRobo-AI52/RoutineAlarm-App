@@ -16,8 +16,10 @@ source = Path("app/src/main/java/com/cztr/routinealarm/AlarmReceiver.kt").read_t
 required = {
     "exact-alarm gate": "AlarmScheduler.canScheduleExact(context)",
     "inexact fallback": "postInexactAlarmFallback(context, title)",
-    "FGS rejection catch": "ForegroundServiceStartNotAllowedException",
-    "no FGS before gate": "if (\n            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S",
+    "FGS rejection catch": "exception is ForegroundServiceStartNotAllowedException",
+    "broad exception guard": "catch (exception: Exception)",
+    "no FGS before gate": "if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S",
     "alarm notification": "Notification.CATEGORY_ALARM",
     "full-screen alarm": "setFullScreenIntent(fullScreen, true)",
     "notification delivery": "manager.notify(AlarmService.NOTIFICATION_ID, notification)",
@@ -30,9 +32,16 @@ gate = source.index("!AlarmScheduler.canScheduleExact(context)")
 launch = source.index("context.startForegroundService(serviceIntent)")
 assert gate < launch, "Exact-alarm gate must precede FGS launch"
 
-catch = source.index("catch (exception: ForegroundServiceStartNotAllowedException)")
-fallback = source.index("postInexactAlarmFallback(context, title)", catch)
-assert catch < fallback, "FGS rejection must route to the fallback"
+catch = source.index("catch (exception: Exception)")
+rejection = source.index(
+    "exception is ForegroundServiceStartNotAllowedException",
+    catch,
+)
+fallback = source.index("postInexactAlarmFallback(context, title)", rejection)
+reraised = source.index("throw exception", rejection)
+assert catch < rejection < fallback < reraised, (
+    "FGS rejection must route to fallback while unrelated exceptions re-raise"
+)
 
 print("AlarmReceiver fallback contract: PASS")
 print("Coverage: source structure only; no Android runtime/device assertion.")
