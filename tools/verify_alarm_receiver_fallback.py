@@ -18,8 +18,7 @@ required = {
     "inexact fallback": "postInexactAlarmFallback(context, title)",
     "FGS rejection catch": "exception is ForegroundServiceStartNotAllowedException",
     "broad exception guard": "catch (exception: Exception)",
-    "no FGS before gate": "if (
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S",
+    "no FGS before gate": "if (\n            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S",
     "alarm notification": "Notification.CATEGORY_ALARM",
     "full-screen alarm": "setFullScreenIntent(fullScreen, true)",
     "notification delivery": "manager.notify(AlarmService.NOTIFICATION_ID, notification)",
