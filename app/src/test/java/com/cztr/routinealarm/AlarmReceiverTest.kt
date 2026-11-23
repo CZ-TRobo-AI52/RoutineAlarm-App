@@ -1,6 +1,5 @@
 package com.cztr.routinealarm
 
-import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
@@ -8,6 +7,7 @@ import android.content.Intent
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -33,17 +33,19 @@ class AlarmReceiverTest {
 
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
         shadowOf(notificationManager).cancelAll()
+        shadowOf(context).clearStartedServices()
     }
 
     @After
     fun tearDown() {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         shadowOf(notificationManager).cancelAll()
+        shadowOf(context).clearStartedServices()
         ShadowNotificationManager.reset()
     }
 
     @Test
-    fun exactAlarmUnavailable_postsAlarmNotificationWithoutStartingForegroundService() {
+    fun exactAlarmUnavailable_postsAlarmNotification() {
         val intent = Intent(context, AlarmReceiver::class.java).apply {
             putExtra(AlarmScheduler.EXTRA_TITLE, "Morning routine")
         }
@@ -63,6 +65,7 @@ class AlarmReceiverTest {
         assertNotNull(
             notificationManager.getNotificationChannel(AlarmService.CHANNEL_ID)
         )
+        assertTrue(shadowOf(context).allStartedServices.isEmpty())
     }
 
     @Test
