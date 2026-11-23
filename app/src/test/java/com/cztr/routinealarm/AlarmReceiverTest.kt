@@ -39,7 +39,7 @@ class AlarmReceiverTest {
     fun tearDown() {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
         notificationManager.cancelAll()
-        shadowOf(context).clearStartedServices()
+        shadowOf(RuntimeEnvironment.getApplication()).clearStartedServices()
     }
 
     @Test
