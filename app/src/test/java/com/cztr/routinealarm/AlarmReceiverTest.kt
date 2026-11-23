@@ -15,7 +15,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowAlarmManager
-import org.robolectric.shadows.ShadowNotificationManager
 import org.robolectric.Shadows.shadowOf
 
 @RunWith(RobolectricTestRunner::class)
@@ -39,9 +38,8 @@ class AlarmReceiverTest {
     @After
     fun tearDown() {
         ShadowAlarmManager.setCanScheduleExactAlarms(true)
-        shadowOf(notificationManager).cancelAll()
+        notificationManager.cancelAll()
         shadowOf(context).clearStartedServices()
-        ShadowNotificationManager.reset()
     }
 
     @Test
