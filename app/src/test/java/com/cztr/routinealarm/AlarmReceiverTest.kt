@@ -32,7 +32,7 @@ class AlarmReceiverTest {
             context.getSystemService(NotificationManager::class.java)
 
         ShadowAlarmManager.setCanScheduleExactAlarms(false)
-        shadowOf(notificationManager).cancelAll()
+        notificationManager.cancelAll()
         shadowOf(context).clearStartedServices()
     }
 
@@ -65,7 +65,7 @@ class AlarmReceiverTest {
         assertNotNull(
             notificationManager.getNotificationChannel(AlarmService.CHANNEL_ID)
         )
-        assertTrue(shadowOf(context).allStartedServices.isEmpty())
+        assertTrue(shadowOf(context).getAllStartedServices().isEmpty())
     }
 
     @Test
