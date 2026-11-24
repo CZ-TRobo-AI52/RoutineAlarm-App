@@ -2,6 +2,7 @@ package com.cztr.routinealarm
 
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.ForegroundServiceStartNotAllowedException
 import android.content.Context
 import android.content.Intent
 import org.junit.After
@@ -63,6 +64,32 @@ class AlarmReceiverTest {
         assertNotNull(
             notificationManager.getNotificationChannel(AlarmService.CHANNEL_ID)
         )
+        assertTrue(shadowOf(RuntimeEnvironment.getApplication()).getAllStartedServices().isEmpty())
+    }
+
+    @Test
+    fun foregroundServiceStartRejected_postsAlarmNotificationFallback() {
+        val throwingContext = object : android.content.ContextWrapper(context) {
+            override fun startForegroundService(service: Intent): android.content.ComponentName? {
+                throw ForegroundServiceStartNotAllowedException("test rejection")
+            }
+        }
+
+        ShadowAlarmManager.setCanScheduleExactAlarms(true)
+
+        val intent = Intent(throwingContext, AlarmReceiver::class.java).apply {
+            putExtra(AlarmScheduler.EXTRA_TITLE, "Rejected FGS")
+        }
+
+        AlarmReceiver().onReceive(throwingContext, intent)
+
+        val activeNotifications = shadowOf(notificationManager).activeNotifications
+        assertEquals(1, activeNotifications.size)
+        assertEquals(
+            "Rejected FGS",
+            activeNotifications.single().notification.extras.getString(Notification.EXTRA_TEXT)
+        )
+        assertNotNull(activeNotifications.single().notification.fullScreenIntent)
         assertTrue(shadowOf(RuntimeEnvironment.getApplication()).getAllStartedServices().isEmpty())
     }
 
