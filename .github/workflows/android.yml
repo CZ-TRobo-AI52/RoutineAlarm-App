@@ -49,7 +49,7 @@ jobs:
           adb shell settings put global window_animation_scale 0
           adb shell settings put global transition_animation_scale 0
           adb shell settings put global animator_duration_scale 0
-          until adb shell getprop sys.boot_completed | tr -d '\\r' | grep -q '^1$'; do sleep 2; done
+          until adb shell getprop sys.boot_completed | tr -d '\r' | grep -q '^1$'; do sleep 2; done
           adb shell input keyevent 82
 
       - name: Android Runtime Fallback-Test vorbereiten
@@ -62,8 +62,8 @@ jobs:
 
       - name: Android Runtime Fallback-Test ausführen
         run: |
-          adb shell am instrument -w -r \\
-            -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest \\
+          adb shell am instrument -w -r \
+            -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest \
             com.cztr.routinealarm.test/androidx.test.runner.AndroidJUnitRunner
 
       - name: Signaturschlüssel wiederherstellen
@@ -78,7 +78,10 @@ jobs:
           STORE_PASSWORD: ${{ secrets.ROUTINEALARM_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ROUTINEALARM_KEY_ALIAS }}
         run: |
-          keytool -list             -keystore "$RUNNER_TEMP/routinealarm-release.jks"             -storepass "$STORE_PASSWORD"             -alias "$KEY_ALIAS" >/dev/null
+          keytool -list \
+            -keystore "$RUNNER_TEMP/routinealarm-release.jks" \
+            -storepass "$STORE_PASSWORD" \
+            -alias "$KEY_ALIAS" >/dev/null
 
       - name: Signierte Release APK bauen
         env:
@@ -90,7 +93,7 @@ jobs:
 
       - name: SHA256 Prüfsumme erzeugen
         run: |
-          sha256sum app/build/outputs/apk/release/app-release.apk             > app/build/outputs/apk/release/RoutineAlarm-release.sha256
+          sha256sum app/build/outputs/apk/release/app-release.apk > app/build/outputs/apk/release/RoutineAlarm-release.sha256
 
       - name: Signierte APK hochladen
         uses: actions/upload-artifact@v4
