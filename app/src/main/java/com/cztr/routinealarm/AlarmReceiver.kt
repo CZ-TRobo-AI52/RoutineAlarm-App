@@ -1,5 +1,6 @@
 package com.cztr.routinealarm
 
+import android.app.ForegroundServiceStartNotAllowedException
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -8,7 +9,6 @@ import android.os.Build
 class AlarmReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
-
         val title =
             intent.getStringExtra(AlarmScheduler.EXTRA_TITLE)
                 ?: "RoutineAlarm"
@@ -19,7 +19,11 @@ class AlarmReceiver : BroadcastReceiver() {
             }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            context.startForegroundService(serviceIntent)
+            try {
+                context.startForegroundService(serviceIntent)
+            } catch (exception: ForegroundServiceStartNotAllowedException) {
+                AlarmDeliveryFallback.post(context, title)
+            }
         } else {
             context.startService(serviceIntent)
         }
