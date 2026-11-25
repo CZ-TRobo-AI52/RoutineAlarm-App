@@ -156,7 +156,7 @@ class AlarmReceiver : BroadcastReceiver() {
         context: Context,
         title: String
     ) {
-        val channelId = AlarmService.CHANNEL_ID
+        val channelId = AlarmService.ROUTINE_CHANNEL_ID
         val manager = context.getSystemService(NotificationManager::class.java)
 
         if (
