@@ -54,6 +54,9 @@ jobs:
             -storepass "$STORE_PASSWORD" \
             -alias "$KEY_ALIAS" >/dev/null
 
+      - name: Unit-Tests ausführen
+        run: gradle :app:testDebugUnitTest --stacktrace
+
       - name: Signierte Release APK bauen
         env:
           ROUTINEALARM_KEYSTORE_PATH: ${{ runner.temp }}/routinealarm-release.jks
