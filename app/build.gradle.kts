@@ -13,6 +13,7 @@ android {
         targetSdk = 35
         versionCode = 16
         versionName = "0.2.0-alpha14"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -52,9 +53,6 @@ android {
         unitTests.isIncludeAndroidResources = true
     }
 
-    defaultConfig {
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
 }
 
 dependencies {
