@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'r52/isolated-fgs-fallback-main-20261125'
   workflow_dispatch:
 
 jobs:
