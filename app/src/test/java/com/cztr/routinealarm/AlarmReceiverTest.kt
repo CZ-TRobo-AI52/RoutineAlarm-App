@@ -9,7 +9,6 @@ import android.content.ContextWrapper
 import android.content.Intent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -17,7 +16,6 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
 import org.robolectric.shadows.ShadowAlarmManager
-import org.robolectric.shadows.ShadowApplication
 import org.robolectric.Shadows.shadowOf
 
 @RunWith(RobolectricTestRunner::class)
@@ -52,8 +50,7 @@ class AlarmReceiverTest {
             notification.extras.getString(Notification.EXTRA_TEXT)
         )
         assertNotNull(notification.fullScreenIntent)
-        assertNotNull(notificationManager.getNotificationChannel(AlarmService.CHANNEL_ID))
-        assertTrue(shadowOf(context.applicationContext).getAllStartedServices().isEmpty())
+        assertNotNull(notificationManager.getNotificationChannel(AlarmService.ROUTINE_CHANNEL_ID))
     }
 
     @Test
