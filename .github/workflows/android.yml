@@ -43,13 +43,22 @@ jobs:
       - name: Android 35 Emulator starten
         run: |
           sdkmanager "system-images;android-35;google_apis;x86_64"
-          echo "no" | avdmanager create avd -n r52-api35 -k "system-images;android-35;google_apis;x86_64" --force
+          echo "no" | avdmanager create avd -n r52-api35 -k "system-images;android-35;google_apis;x86_64" --device "pixel_2" --force
           nohup emulator -avd r52-api35 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect >/tmp/r52-emulator.log 2>&1 &
-          timeout 60s adb wait-for-device
+          if ! timeout 60s adb wait-for-device; then
+            echo "Android 35 emulator did not become visible to ADB within 60s"
+            echo "=== adb devices -l ==="
+            adb devices -l || true
+            echo "=== emulator process ==="
+            pgrep -af emulator || true
+            echo "=== emulator log tail ==="
+            tail -n 200 /tmp/r52-emulator.log || true
+            exit 1
+          fi
           adb shell settings put global window_animation_scale 0
           adb shell settings put global transition_animation_scale 0
           adb shell settings put global animator_duration_scale 0
-          if ! timeout 300s bash -c 'until adb shell getprop sys.boot_completed | tr -d "\\r" | grep -q "^1$"; do sleep 2; done'; then
+          if ! timeout 300s bash -c 'until adb shell getprop sys.boot_completed | tr -d "\r" | grep -q "^1$"; do sleep 2; done'; then
             echo "Android 35 emulator did not reach sys.boot_completed=1 within 300s"
             echo "=== adb devices -l ==="
             adb devices -l || true
