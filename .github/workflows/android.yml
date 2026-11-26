@@ -48,7 +48,7 @@ jobs:
           timeout 60s adb wait-for-device
           adb shell settings put global window_animation_scale 0
           adb shell settings put global transition_animation_scale 0
-          adb shell animator_duration_scale 0
+          adb shell settings put global animator_duration_scale 0
           if ! timeout 300s bash -c 'until adb shell getprop sys.boot_completed | tr -d "\\r" | grep -q "^1$"; do sleep 2; done'; then
             echo "Android 35 emulator did not reach sys.boot_completed=1 within 300s"
             echo "=== adb devices -l ==="
