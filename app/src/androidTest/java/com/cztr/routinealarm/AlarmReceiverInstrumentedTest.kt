@@ -62,7 +62,7 @@ class AlarmReceiverInstrumentedTest {
         assertNotNull(notification.fullScreenIntent)
 
         val channel =
-            notificationManager.getNotificationChannel(AlarmService.ROUTINE_CHANNEL_ID)
+            notificationManager.getNotificationChannel(AlarmService.CHANNEL_ID)
         assertNotNull(channel)
         assertEquals(
             NotificationManager.IMPORTANCE_HIGH,
