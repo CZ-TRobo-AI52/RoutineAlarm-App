@@ -6,6 +6,7 @@ on:
       - main
       - r52/isolated-main-fgs-fallback-20261121
       - r52/forge-avd-provisioning-fix-20261127
+      - r52/forge-emulator-3730-boot-fix-20261127
   workflow_dispatch:
 
 jobs:
