@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - r52/isolated-main-fgs-fallback-20261121
+      - r52/forge-avd-provisioning-fix-20261127
   workflow_dispatch:
 
 jobs:
@@ -43,8 +44,18 @@ jobs:
       - name: Android 35 Emulator starten
         run: |
           sdkmanager "system-images;android-35;google_apis;x86_64"
+          export ANDROID_USER_HOME="$RUNNER_TEMP/android-user"
+          export ANDROID_AVD_HOME="$ANDROID_USER_HOME/avd"
+          mkdir -p "$ANDROID_AVD_HOME"
           echo "no" | avdmanager create avd -n r52-api35 -k "system-images;android-35;google_apis;x86_64" --device "pixel_2" --force
+          echo "=== AVDs after creation ==="
+          avdmanager list avd
+          test -f "$ANDROID_AVD_HOME/r52-api35.avd/config.ini"
+          test -f "$ANDROID_USER_HOME/avd/r52-api35.ini"
           export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
+          echo "=== emulator -list-avds ==="
+          emulator -list-avds
+          grep -qx "r52-api35" <(emulator -list-avds)
           nohup emulator -avd r52-api35 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect >/tmp/r52-emulator.log 2>&1 &
           if ! timeout 60s adb wait-for-device; then
             echo "Android 35 emulator did not become visible to ADB within 60s"
