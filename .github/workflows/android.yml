@@ -107,13 +107,13 @@ jobs:
             adb shell getprop sys.boot_completed || true
             echo "=== dev.bootcomplete ==="
             adb shell getprop dev.bootcomplete || true
-          adb shell settings put global window_animation_scale 0
-          adb shell settings put global transition_animation_scale 0
-          adb shell settings put global animator_duration_scale 0
             echo "=== emulator log tail ==="
             tail -n 200 /tmp/r52-emulator.log || true
             exit 1
           fi
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
           adb shell input keyevent 82
 
       - name: Android Runtime Fallback-Test vorbereiten
