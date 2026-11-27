@@ -60,9 +60,25 @@ jobs:
           uname -m
           emulator -accel-check 2>&1 | tee /tmp/r52-accel-check.log
           grep -q "Hypervisor.Framework" /tmp/r52-accel-check.log
-          nohup emulator -avd r52-api35 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect >/tmp/r52-emulator.log 2>&1 &
-          if ! python3 -c 'import subprocess; subprocess.run(["adb", "wait-for-device"], timeout=60, check=True)'; then
-            echo "Android 35 emulator did not become visible to ADB within 60s"
+          adb start-server
+          nohup emulator -avd r52-api35 -no-window -no-audio -no-boot-anim -no-snapshot-load -no-snapshot-save -gpu swiftshader_indirect >/tmp/r52-emulator.log 2>&1 &
+          if ! python3 - <<'PY'
+          import subprocess
+          import sys
+          import time
+          deadline = time.monotonic() + 180
+          while time.monotonic() < deadline:
+              result = subprocess.run(["adb", "devices"], capture_output=True, text=True)
+              for line in result.stdout.splitlines()[1:]:
+                  fields = line.split()
+                  if len(fields) >= 2 and fields[1] == "device":
+                      sys.exit(0)
+              time.sleep(2)
+          print("Android 35 emulator did not reach adb device state within 180s")
+          sys.exit(1)
+          PY
+          then
+            echo "Android 35 emulator did not become online in ADB within 180s"
             echo "=== adb devices -l ==="
             adb devices -l || true
             echo "=== emulator process ==="
