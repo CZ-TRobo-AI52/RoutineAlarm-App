@@ -30,6 +30,7 @@ jobs:
       - name: Android SDK 35 installieren
         run: |
           sdkmanager "platform-tools"
+          sdkmanager "emulator"
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
 
@@ -53,6 +54,8 @@ jobs:
           test -f "$ANDROID_AVD_HOME/r52-api35.avd/config.ini"
           test -f "$ANDROID_USER_HOME/avd/r52-api35.ini"
           export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
+          echo "=== emulator version ==="
+          emulator -version
           echo "=== emulator -list-avds ==="
           emulator -list-avds
           grep -qx "r52-api35" <(emulator -list-avds)
