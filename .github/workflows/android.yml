@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: macos-15-intel
 
     steps:
       - name: Repository laden
@@ -56,8 +56,12 @@ jobs:
           echo "=== emulator -list-avds ==="
           emulator -list-avds
           grep -qx "r52-api35" <(emulator -list-avds)
+          echo "=== host architecture and acceleration ==="
+          uname -m
+          emulator -accel-check 2>&1 | tee /tmp/r52-accel-check.log
+          grep -q "Hypervisor.Framework" /tmp/r52-accel-check.log
           nohup emulator -avd r52-api35 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect >/tmp/r52-emulator.log 2>&1 &
-          if ! timeout 60s adb wait-for-device; then
+          if ! python3 -c 'import subprocess; subprocess.run(["adb", "wait-for-device"], timeout=60, check=True)'; then
             echo "Android 35 emulator did not become visible to ADB within 60s"
             echo "=== adb devices -l ==="
             adb devices -l || true
@@ -70,8 +74,20 @@ jobs:
           adb shell settings put global window_animation_scale 0
           adb shell settings put global transition_animation_scale 0
           adb shell settings put global animator_duration_scale 0
-          if ! timeout 300s bash -c 'until adb shell getprop sys.boot_completed | tr -d "\r" | grep -q "^1$"; do sleep 2; done'; then
-            echo "Android 35 emulator did not reach sys.boot_completed=1 within 300s"
+          if ! python3 - <<'PY'
+          import subprocess
+          import sys
+          import time
+          deadline = time.monotonic() + 300
+          while time.monotonic() < deadline:
+              result = subprocess.run(["adb", "shell", "getprop", "sys.boot_completed"], capture_output=True, text=True)
+              if result.returncode == 0 and result.stdout.strip() == "1":
+                  sys.exit(0)
+              time.sleep(2)
+          print("Android 35 emulator did not reach sys.boot_completed=1 within 300s")
+          sys.exit(1)
+          PY
+          then
             echo "=== adb devices -l ==="
             adb devices -l || true
             echo "=== sys.boot_completed ==="
@@ -94,8 +110,8 @@ jobs:
 
       - name: Android Runtime Fallback-Test ausführen
         run: |
-          adb shell am instrument -w -r \
-            -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest \
+          adb shell am instrument -w -r \\
+            -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest \\
             com.cztr.routinealarm.test/androidx.test.runner.AndroidJUnitRunner
 
       - name: Signaturschlüssel wiederherstellen
@@ -110,9 +126,9 @@ jobs:
           STORE_PASSWORD: ${{ secrets.ROUTINEALARM_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ROUTINEALARM_KEY_ALIAS }}
         run: |
-          keytool -list \
-            -keystore "$RUNNER_TEMP/routinealarm-release.jks" \
-            -storepass "$STORE_PASSWORD" \
+          keytool -list \\
+            -keystore "$RUNNER_TEMP/routinealarm-release.jks" \\
+            -storepass "$STORE_PASSWORD" \\
             -alias "$KEY_ALIAS" >/dev/null
 
       - name: Signierte Release APK bauen
@@ -125,7 +141,7 @@ jobs:
 
       - name: SHA256 Prüfsumme erzeugen
         run: |
-          sha256sum app/build/outputs/apk/release/app-release.apk > app/build/outputs/apk/release/RoutineAlarm-release.sha256
+          shasum -a 256 app/build/outputs/apk/release/app-release.apk > app/build/outputs/apk/release/RoutineAlarm-release.sha256
 
       - name: Signierte APK hochladen
         uses: actions/upload-artifact@v4
