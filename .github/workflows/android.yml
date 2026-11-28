@@ -135,13 +135,20 @@ jobs:
 
       - name: Android Runtime Fallback-Test ausführen
         run: |
-          adb shell am instrument -w -r -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest com.cztr.routinealarm.test/androidx.test.runner.AndroidJUnitRunner
+          set -o pipefail
+          adb shell am instrument -w -r -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest com.cztr.routinealarm.test/androidx.test.runner.AndroidJUnitRunner 2>&1 | tee /tmp/r52-instrumentation.log
+          if grep -q 'FAILURES!!!\|INSTRUMENTATION_CODE: -1' /tmp/r52-instrumentation.log; then
+            echo "Android instrumentation reported a failing test"
+            exit 1
+          fi
+          grep -q 'INSTRUMENTATION_CODE: 0' /tmp/r52-instrumentation.log
+          grep -q 'OK (' /tmp/r52-instrumentation.log
 
       - name: Signaturschlüssel wiederherstellen
         env:
           KEYSTORE_BASE64: ${{ secrets.ROUTINEALARM_KEYSTORE_BASE64 }}
         run: |
-          python3 -c 'import base64, os, pathlib; pathlib.Path(os.environ["RUNNER_TEMP"] + "/routinealarm-release.jks").write_bytes(base64.b64decode(os.environ["KEYSTORE_BASE64"], validate=True))'
+          python3 -c 'import base64, os, pathlib; encoded="".join(os.environ["KEYSTORE_BASE64"].split()); pathlib.Path(os.environ["RUNNER_TEMP"] + "/routinealarm-release.jks").write_bytes(base64.b64decode(encoded, validate=True))'
           test -s "$RUNNER_TEMP/routinealarm-release.jks"
 
       - name: Signaturschlüssel überprüfen
