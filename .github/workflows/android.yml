@@ -30,8 +30,10 @@ jobs:
       - name: Android SDK 35 installieren
         run: |
           sdkmanager "platform-tools"
+          sdkmanager "emulator"
           sdkmanager "platforms;android-35"
           sdkmanager "build-tools;35.0.0"
+          emulator -version
 
       - name: Gradle 8.9 einrichten
         uses: gradle/actions/setup-gradle@v4
