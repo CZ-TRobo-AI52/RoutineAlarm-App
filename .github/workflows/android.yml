@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-15-intel
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Repository laden
@@ -56,10 +56,18 @@ jobs:
           echo "=== emulator -list-avds ==="
           emulator -list-avds
           grep -qx "r52-api35" <(emulator -list-avds)
-          echo "=== host architecture and acceleration ==="
+          echo "=== enable KVM device permissions ==="
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          test -e /dev/kvm
+          test -r /dev/kvm
+          test -w /dev/kvm
+          ls -l /dev/kvm
+          echo "=== host architecture and KVM acceleration ==="
           uname -m
           emulator -accel-check 2>&1 | tee /tmp/r52-accel-check.log
-          grep -q "Hypervisor.Framework" /tmp/r52-accel-check.log
+          grep -qi "KVM" /tmp/r52-accel-check.log
           adb start-server
           nohup emulator -avd r52-api35 -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data -gpu swiftshader_indirect >/tmp/r52-emulator.log 2>&1 &
           if ! python3 - <<'PY'
