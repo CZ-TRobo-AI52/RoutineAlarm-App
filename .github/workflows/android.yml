@@ -134,9 +134,7 @@ jobs:
 
       - name: Android Runtime Fallback-Test ausführen
         run: |
-          adb shell am instrument -w -r \\
-            -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest \\
-            com.cztr.routinealarm.test/androidx.test.runner.AndroidJUnitRunner
+          adb shell am instrument -w -r -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest com.cztr.routinealarm.test/androidx.test.runner.AndroidJUnitRunner
 
       - name: Signaturschlüssel wiederherstellen
         env:
