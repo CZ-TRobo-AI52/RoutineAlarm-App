@@ -65,7 +65,7 @@ jobs:
           emulator -accel-check 2>&1 | tee /tmp/r52-accel-check.log
           grep -q "Hypervisor.Framework" /tmp/r52-accel-check.log
           adb start-server
-          nohup emulator -avd r52-api35 -no-window -no-audio -no-boot-anim -no-snapshot-load -no-snapshot-save -gpu swiftshader_indirect >/tmp/r52-emulator.log 2>&1 &
+          nohup emulator -avd r52-api35 -no-window -no-audio -no-boot-anim -no-snapshot-load -no-snapshot-save -gpu swiftshader_indirect -feature -Vulkan >/tmp/r52-emulator.log 2>&1 &
           if ! python3 - <<'PY'
           import subprocess
           import sys
