@@ -157,10 +157,7 @@ jobs:
           STORE_PASSWORD: ${{ secrets.ROUTINEALARM_STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ROUTINEALARM_KEY_ALIAS }}
         run: |
-          keytool -list \\
-            -keystore "$RUNNER_TEMP/routinealarm-release.jks" \\
-            -storepass "$STORE_PASSWORD" \\
-            -alias "$KEY_ALIAS" >/dev/null
+          keytool -list -keystore "$RUNNER_TEMP/routinealarm-release.jks" -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" >/dev/null
 
       - name: Signierte Release APK bauen
         env:
