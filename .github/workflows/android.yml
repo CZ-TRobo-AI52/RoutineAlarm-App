@@ -137,11 +137,12 @@ jobs:
         run: |
           set -o pipefail
           adb shell am instrument -w -r -e class com.cztr.routinealarm.AlarmReceiverInstrumentedTest com.cztr.routinealarm.test/androidx.test.runner.AndroidJUnitRunner 2>&1 | tee /tmp/r52-instrumentation.log
-          if grep -q 'FAILURES!!!\|INSTRUMENTATION_CODE: -1' /tmp/r52-instrumentation.log; then
+          # Android Instrumentation reports RESULT_OK as INSTRUMENTATION_CODE: -1; test failures are identified by FAILURES!!!.
+          if grep -q 'FAILURES!!!' /tmp/r52-instrumentation.log; then
             echo "Android instrumentation reported a failing test"
             exit 1
           fi
-          grep -q 'INSTRUMENTATION_CODE: 0' /tmp/r52-instrumentation.log
+          grep -q 'INSTRUMENTATION_STATUS_CODE: 0' /tmp/r52-instrumentation.log
           grep -q 'OK (' /tmp/r52-instrumentation.log
 
       - name: Signaturschlüssel wiederherstellen
